@@ -15,6 +15,8 @@ bool is_available() {
 
 void start_capture(std::string) {}
 void stop_capture() {}
+void set_max_ops_per_buffer(int) {}
+void set_max_mb_per_buffer(int) {}
 
 const std::unordered_map<std::string, std::variant<std::string, size_t>>&
 device_info() {
