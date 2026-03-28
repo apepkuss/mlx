@@ -47,4 +47,14 @@ void stop_capture() {
   manager->stopCapture();
 }
 
+void set_max_ops_per_buffer(int val) {
+  auto& d = metal::device(mlx::core::Device::gpu);
+  d.set_max_ops_per_buffer(val);
+}
+
+void set_max_mb_per_buffer(int val) {
+  auto& d = metal::device(mlx::core::Device::gpu);
+  d.set_max_mb_per_buffer(val);
+}
+
 } // namespace mlx::core::metal

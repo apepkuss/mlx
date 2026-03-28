@@ -165,6 +165,13 @@ class MLX_API Device {
     return arch_gen_;
   }
 
+  void set_max_ops_per_buffer(int val) {
+    max_ops_per_buffer_ = val;
+  }
+  void set_max_mb_per_buffer(int val) {
+    max_mb_per_buffer_ = val;
+  }
+
   void new_queue(int index);
 
   MTL::CommandQueue* get_queue(Stream stream);
