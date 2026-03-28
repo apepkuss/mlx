@@ -100,9 +100,15 @@ struct MLX_API CommandEncoder {
 
   void barrier();
 
+ public:
+  // The command buffer this encoder was created from.
+  // Used to detect stale encoders after cross-stream buffer commits.
+  MTL::CommandBuffer* source_buffer() const { return source_buffer_; }
+
  private:
   DeviceStream& stream_;
   MTL::ComputeCommandEncoder* enc_;
+  MTL::CommandBuffer* source_buffer_;
   bool needs_barrier_{false};
   bool concurrent_{false};
   std::unordered_set<MTL::Resource*> prev_outputs_;

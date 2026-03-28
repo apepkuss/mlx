@@ -234,6 +234,7 @@ MTL::Library* load_library(
 } // namespace
 
 CommandEncoder::CommandEncoder(DeviceStream& stream) : stream_(stream) {
+  source_buffer_ = stream_.buffer;
   enc_ = stream_.buffer->computeCommandEncoder(MTL::DispatchTypeConcurrent);
   enc_->retain();
 }
@@ -440,6 +441,14 @@ void Device::add_temporaries(std::vector<array> arrays, int index) {
 void Device::end_encoding(int index) {
   auto& stream = get_stream_(index);
   if (stream.encoder != nullptr) {
+    // If the command buffer was replaced (committed by cross-stream sync)
+    // since this encoder was created, the encoder is stale. Clean it up
+    // without fence operations to avoid Metal assertion failures.
+    if (stream.buffer != stream.encoder->source_buffer()) {
+      stream.temporaries.clear();
+      stream.encoder = nullptr;
+      return;
+    }
     // Each command encoder has a unique fence. We also store a map of
     // all previous outputs of command encoders to their corresponding fence.
     // - The command encoder records its inputs and outputs.
