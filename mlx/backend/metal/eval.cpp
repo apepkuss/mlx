@@ -54,9 +54,16 @@ void eval(array& arr) {
     buffers.erase(it);
   }
 
+  // Re-fetch command buffer: eval_gpu() above may have triggered
+  // cross-stream synchronization (e.g. via Stream::Drop -> synchronize)
+  // that committed and replaced this stream's command buffer.
+  command_buffer = d.get_command_buffer(s.index);
+
   if (d.command_buffer_needs_commit(s.index)) {
     d.end_encoding(s.index);
     scheduler::notify_new_task(s);
+    // Re-fetch again after end_encoding which may also trigger commits
+    command_buffer = d.get_command_buffer(s.index);
     command_buffer->addCompletedHandler(
         [s, buffers = std::move(buffers)](MTL::CommandBuffer* cbuf) {
           scheduler::notify_task_completion(s);
@@ -75,8 +82,9 @@ void eval(array& arr) {
 void finalize(Stream s) {
   auto pool = metal::new_scoped_memory_pool();
   auto& d = metal::device(s.device);
-  auto cb = d.get_command_buffer(s.index);
   d.end_encoding(s.index);
+  // Fetch command buffer after end_encoding to avoid stale pointer
+  auto cb = d.get_command_buffer(s.index);
   cb->addCompletedHandler([](MTL::CommandBuffer* cbuf) { check_error(cbuf); });
   d.commit_command_buffer(s.index);
   d.get_command_buffer(s.index);
@@ -85,9 +93,10 @@ void finalize(Stream s) {
 void synchronize(Stream s) {
   auto pool = metal::new_scoped_memory_pool();
   auto& d = metal::device(s.device);
+  d.end_encoding(s.index);
+  // Fetch command buffer after end_encoding to avoid stale pointer
   auto cb = d.get_command_buffer(s.index);
   cb->retain();
-  d.end_encoding(s.index);
   d.commit_command_buffer(s.index);
   cb->waitUntilCompleted();
   check_error(cb);
