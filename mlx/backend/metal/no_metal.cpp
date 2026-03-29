@@ -15,6 +15,8 @@ bool is_available() {
 
 void start_capture(std::string) {}
 void stop_capture() {}
+int get_max_ops_per_buffer() { return 40; }
+int get_max_mb_per_buffer() { return 40; }
 void set_max_ops_per_buffer(int) {}
 void set_max_mb_per_buffer(int) {}
 
