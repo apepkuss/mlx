@@ -402,6 +402,7 @@ bool Device::command_buffer_needs_commit(int index) {
 
 MTL::CommandBuffer* Device::get_command_buffer(int index) {
   auto& stream = get_stream_(index);
+  std::lock_guard<std::recursive_mutex> lk(stream.buffer_mtx);
   if (stream.buffer == nullptr) {
     stream.buffer = stream.queue->commandBufferWithUnretainedReferences();
     if (!stream.buffer) {
@@ -416,6 +417,7 @@ MTL::CommandBuffer* Device::get_command_buffer(int index) {
 
 void Device::commit_command_buffer(int index) {
   auto& stream = get_stream_(index);
+  std::lock_guard<std::recursive_mutex> lk(stream.buffer_mtx);
   stream.buffer->commit();
   stream.buffer->release();
   stream.buffer = nullptr;
@@ -440,6 +442,7 @@ void Device::add_temporaries(std::vector<array> arrays, int index) {
 
 void Device::end_encoding(int index) {
   auto& stream = get_stream_(index);
+  std::lock_guard<std::recursive_mutex> lk(stream.buffer_mtx);
   if (stream.encoder != nullptr) {
     // If the command buffer was replaced (committed by cross-stream sync)
     // since this encoder was created, the encoder is stale. Clean it up
@@ -510,6 +513,7 @@ void Device::end_encoding(int index) {
 
 CommandEncoder& Device::get_command_encoder(int index) {
   auto& stream = get_stream_(index);
+  std::lock_guard<std::recursive_mutex> lk(stream.buffer_mtx);
   if (stream.encoder == nullptr) {
     // Ensure there is an active command buffer
     if (stream.buffer == nullptr) {

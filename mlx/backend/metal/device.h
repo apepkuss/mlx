@@ -139,6 +139,10 @@ struct DeviceStream {
   std::unordered_map<const void*, std::shared_ptr<Fence>> outputs;
   // Used to allow thread-safe access to the outputs map
   std::mutex fence_mtx;
+  // Protects buffer and encoder lifecycle against cross-stream races.
+  // Recursive because synchronize() calls end_encoding + get_command_buffer
+  // + commit_command_buffer sequentially on the same thread.
+  std::recursive_mutex buffer_mtx;
 
   // Data updated between command buffers
   MTL::CommandBuffer* buffer{nullptr};
