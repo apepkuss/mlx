@@ -22,6 +22,12 @@ MLX_API const
     std::unordered_map<std::string, std::variant<std::string, size_t>>&
     device_info();
 
+/** Get the maximum number of operations per Metal command buffer. */
+MLX_API int get_max_ops_per_buffer();
+
+/** Get the maximum MB of data per Metal command buffer. */
+MLX_API int get_max_mb_per_buffer();
+
 /** Set the maximum number of operations per Metal command buffer. */
 MLX_API void set_max_ops_per_buffer(int val);
 

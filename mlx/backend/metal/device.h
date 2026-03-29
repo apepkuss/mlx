@@ -153,6 +153,12 @@ class MLX_API Device {
     return std::make_tuple(max_ops_per_buffer_, max_mb_per_buffer_);
   }
 
+  int get_max_ops_per_buffer() const {
+    return max_ops_per_buffer_;
+  }
+  int get_max_mb_per_buffer() const {
+    return max_mb_per_buffer_;
+  }
   void set_max_ops_per_buffer(int val) {
     max_ops_per_buffer_ = val;
   }
