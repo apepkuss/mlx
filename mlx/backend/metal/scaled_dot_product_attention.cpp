@@ -795,4 +795,107 @@ void ScaledDotProductAttentionVJP::eval_gpu(
   throw std::runtime_error("NYI");
 }
 
+void TurboQuantSDPA::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  // inputs: [queries, k_packed, values, k_norms, codebook]
+  auto& q_pre = inputs[0];
+  auto& k_packed = inputs[1];
+  auto& v_pre = inputs[2];
+  auto& k_norms = inputs[3];
+  auto& codebook = inputs[4];
+  auto& o = outputs[0];
+
+  auto& s = stream();
+  auto& d = metal::device(s.device);
+
+  std::vector<array> copies;
+  copies.reserve(4);
+  auto ensure_contiguous = [&copies, &s](const array& arr) -> const array& {
+    if (arr.flags().row_contiguous || arr.strides().back() == 1) {
+      return arr;
+    }
+    copies.push_back(contiguous_copy_gpu(arr, s));
+    return copies.back();
+  };
+
+  const auto& q = ensure_contiguous(q_pre);
+  const auto& v = ensure_contiguous(v_pre);
+
+  // Allocate output
+  if (q.is_donatable() && q.flags().row_contiguous && q.size() == o.size()) {
+    o.copy_shared_buffer(q);
+  } else {
+    o.set_data(allocator::malloc(o.nbytes()));
+  }
+
+  int D = q.shape(-1);
+  int vpw = bits_ == 3 ? 10 : (bits_ == 4 ? 8 : 32);
+
+  // Kernel name
+  std::string kname = "sdpa_vector_turbo_";
+  kname += get_type_string(q.dtype());
+  kname += "_";
+  kname += std::to_string(D);
+  kname += "_";
+  kname += std::to_string(v.shape(-1));
+  kname += "_b";
+  kname += std::to_string(bits_);
+  kname += "_vpw";
+  kname += std::to_string(vpw);
+
+  int gqa_factor = q.shape(1) / k_packed.shape(1);
+  int N = k_norms.shape(2);
+  size_t k_head_stride = k_packed.strides()[1];
+  size_t k_seq_stride = k_packed.strides()[2];
+  size_t v_head_stride = v.strides()[1];
+  size_t v_seq_stride = v.strides()[2];
+  size_t k_norm_head_stride = k_norms.strides()[1];
+
+  bool has_mask = false;
+  bool bool_mask = false;
+  bool float_mask = false;
+  bool query_transposed = !q.flags().row_contiguous;
+  bool has_sinks = false;
+  metal::MTLFCList func_consts = {
+      {&has_mask, MTL::DataType::DataTypeBool, 20},
+      {&query_transposed, MTL::DataType::DataTypeBool, 21},
+      {&do_causal_, MTL::DataType::DataTypeBool, 22},
+      {&bool_mask, MTL::DataType::DataTypeBool, 23},
+      {&float_mask, MTL::DataType::DataTypeBool, 24},
+      {&has_sinks, MTL::DataType::DataTypeBool, 25},
+  };
+
+  std::string hash_name = kname;
+  hash_name += "_nomask";
+  hash_name += query_transposed ? "_qt" : "_qnt";
+  hash_name += do_causal_ ? "_c" : "_nc";
+
+  auto kernel = d.get_kernel(kname, hash_name, func_consts);
+  auto& compute_encoder = d.get_command_encoder(s.index);
+  compute_encoder.set_compute_pipeline_state(kernel);
+
+  compute_encoder.set_input_array(q, 0);
+  compute_encoder.set_input_array(k_packed, 1);
+  compute_encoder.set_input_array(v, 2);
+  compute_encoder.set_output_array(o, 3);
+  compute_encoder.set_bytes(gqa_factor, 4);
+  compute_encoder.set_bytes(N, 5);
+  compute_encoder.set_bytes(k_head_stride, 6);
+  compute_encoder.set_bytes(k_seq_stride, 7);
+  compute_encoder.set_bytes(v_head_stride, 8);
+  compute_encoder.set_bytes(v_seq_stride, 9);
+  compute_encoder.set_bytes(scale_, 10);
+  // buffers 11-17 unused (no mask/sinks)
+  compute_encoder.set_input_array(k_norms, 18);
+  compute_encoder.set_bytes(k_norm_head_stride, 19);
+  compute_encoder.set_input_array(codebook, 20);
+
+  MTL::Size group_dims(1024, 1, 1);
+  MTL::Size grid_dims(q.shape(0) * q.shape(1), q.shape(2), 1);
+  compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+
+  d.add_temporaries(std::move(copies), s.index);
+}
+
 } // namespace mlx::core::fast

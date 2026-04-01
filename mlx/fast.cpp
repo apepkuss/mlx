@@ -955,4 +955,48 @@ bool ConvertFP8::is_equivalent(const Primitive& other) const {
   return to_fp8_ == a_other.to_fp8_;
 }
 
+array turboquant_sdpa(
+    const array& queries,
+    const array& k_packed,
+    const array& values,
+    const array& k_norms,
+    const array& codebook,
+    float scale,
+    int bits,
+    const std::string& mask_mode,
+    std::optional<array> mask_arr,
+    StreamOrDevice s) {
+  if (queries.ndim() != 4 || values.ndim() != 4) {
+    throw std::invalid_argument(
+        "[turboquant_sdpa] queries and values expected to be rank 4");
+  }
+
+  bool do_causal = mask_mode == "causal";
+  auto final_type = queries.dtype();
+
+  // CPU fallback: not supported
+  auto fallback = [](const std::vector<array>&) -> std::vector<array> {
+    throw std::runtime_error("[turboquant_sdpa] CPU fallback not supported");
+  };
+
+  auto out = array(
+      queries.shape(),
+      final_type,
+      std::make_shared<TurboQuantSDPA>(
+          to_stream(s), fallback, scale, do_causal, bits),
+      {astype(queries, final_type, s),
+       astype(k_packed, uint32, s),
+       astype(values, final_type, s),
+       astype(k_norms, float32, s),
+       astype(codebook, float32, s)});
+
+  return out;
+}
+
+bool TurboQuantSDPA::is_equivalent(const Primitive& other) const {
+  const TurboQuantSDPA& a_other = static_cast<const TurboQuantSDPA&>(other);
+  return scale_ == a_other.scale_ && do_causal_ == a_other.do_causal_ &&
+      bits_ == a_other.bits_;
+}
+
 } // namespace mlx::core::fast
