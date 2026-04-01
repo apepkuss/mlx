@@ -295,6 +295,38 @@ class ScaledDotProductAttentionVJP : public Custom {
   bool has_sinks_;
 };
 
+class TurboQuantSDPA : public Custom {
+ public:
+  TurboQuantSDPA(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float scale,
+      bool do_causal,
+      int bits)
+      : Custom(stream, std::move(fallback)),
+        scale_(scale),
+        do_causal_(do_causal),
+        bits_(bits) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("[TurboQuantSDPA] CPU not supported");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  bool is_equivalent(const Primitive& other) const override;
+
+  DEFINE_NAME(TurboQuantSDPA);
+  DEFINE_INPUT_OUTPUT_SHAPE()
+
+ private:
+  float scale_;
+  bool do_causal_;
+  int bits_;
+};
+
 class ConvertFP8 : public Primitive {
  public:
   explicit ConvertFP8(Stream stream, bool to_fp8)
