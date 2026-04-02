@@ -958,17 +958,18 @@ bool ConvertFP8::is_equivalent(const Primitive& other) const {
 array turboquant_sdpa(
     const array& queries,
     const array& k_packed,
-    const array& values,
+    const array& v_packed,
     const array& k_norms,
     const array& codebook,
+    const array& v_norms,
     float scale,
     int bits,
     const std::string& mask_mode,
     std::optional<array> mask_arr,
     StreamOrDevice s) {
-  if (queries.ndim() != 4 || values.ndim() != 4) {
+  if (queries.ndim() != 4 || v_packed.ndim() != 4) {
     throw std::invalid_argument(
-        "[turboquant_sdpa] queries and values expected to be rank 4");
+        "[turboquant_sdpa] queries and v_packed expected to be rank 4");
   }
 
   bool do_causal = mask_mode == "causal";
@@ -979,13 +980,15 @@ array turboquant_sdpa(
     throw std::runtime_error("[turboquant_sdpa] CPU fallback not supported");
   };
 
+  // inputs: [queries, k_packed, v_packed, k_norms, codebook, v_norms, (mask)]
   bool has_mask = mask_arr.has_value();
   std::vector<array> inputs = {
       astype(queries, final_type, s),
       astype(k_packed, uint32, s),
-      astype(values, final_type, s),
+      astype(v_packed, uint32, s),
       astype(k_norms, float32, s),
-      astype(codebook, float32, s)};
+      astype(codebook, float32, s),
+      astype(v_norms, float32, s)};
   if (has_mask) {
     inputs.push_back(*mask_arr);
   }

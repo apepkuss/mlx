@@ -15,13 +15,13 @@
 template <typename T, int D, int V_DIM = D, int BITS = 3, int VPW = 10>
 [[kernel]] void sdpa_vector_turbo(
     const device T* queries [[buffer(0)]],          // pre-rotated queries
-    const device uint32_t* k_packed [[buffer(1)]],  // packed K indices
-    const device T* values [[buffer(2)]],           // dequantized V
+    const device uint32_t* k_packed [[buffer(1)]],  // bit-packed K indices
+    const device uint32_t* v_packed [[buffer(2)]],  // bit-packed V indices
     device T* out [[buffer(3)]],
     const constant int& gqa_factor [[buffer(4)]],
     const constant int& N [[buffer(5)]],
-    const constant size_t& k_head_stride [[buffer(6)]],   // in uint32 words
-    const constant size_t& k_seq_stride [[buffer(7)]],    // in uint32 words
+    const constant size_t& k_head_stride [[buffer(6)]],
+    const constant size_t& k_seq_stride [[buffer(7)]],
     const constant size_t& v_head_stride [[buffer(8)]],
     const constant size_t& v_seq_stride [[buffer(9)]],
     const constant float& scale [[buffer(10)]],
@@ -36,9 +36,11 @@ template <typename T, int D, int V_DIM = D, int BITS = 3, int VPW = 10>
     const device T* sinks [[buffer(16), function_constant(has_sinks)]],
     const constant int& num_q_heads
     [[buffer(17), function_constant(has_sinks)]],
-    const device float* k_norms [[buffer(18)]],           // per-vector norms
+    const device float* k_norms [[buffer(18)]],
     const constant size_t& k_norm_head_stride [[buffer(19)]],
-    const device float* codebook [[buffer(20)]],          // 2^BITS centroids
+    const device float* codebook [[buffer(20)]],          // shared K+V codebook
+    const device float* v_norms [[buffer(21)]],           // per-vector V norms
+    const constant size_t& v_norm_head_stride [[buffer(22)]],
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -76,9 +78,9 @@ template <typename T, int D, int V_DIM = D, int BITS = 3, int VPW = 10>
   k_packed += kv_head_idx * k_head_stride + simd_gid * k_seq_stride;
   k_norms += kv_head_idx * k_norm_head_stride + simd_gid;
 
-  // V pointer
-  values += kv_head_idx * v_head_stride + simd_gid * v_seq_stride +
-      simd_lid * v_per_thread;
+  // V packed pointer (same layout as K: bit-packed uint32)
+  v_packed += kv_head_idx * v_head_stride + simd_gid * v_seq_stride;
+  v_norms += kv_head_idx * v_norm_head_stride + simd_gid;
 
   if (bool_mask) {
     bmask += q_batch_head_idx * mask_head_stride +
@@ -149,16 +151,25 @@ template <typename T, int D, int V_DIM = D, int BITS = 3, int VPW = 10>
       max_score = new_max;
       sum_exp_score = sum_exp_score * factor + exp_score;
 
-      // Update output with V (fp16, from decode buffer)
+      // Update output with dequantized V (bit-packed, same codebook as K)
+      U v_norm_val = v_norms[0];
+      int v_elem_start = simd_lid * v_per_thread;
       for (int j = 0; j < v_per_thread; j++) {
-        o[j] = o[j] * factor + exp_score * static_cast<U>(values[j]);
+        int v_elem = v_elem_start + j;
+        int v_word_idx = v_elem / VPW;
+        int v_pos_in_word = v_elem % VPW;
+        uint v_word = v_packed[v_word_idx];
+        uint v_idx = (v_word >> (v_pos_in_word * BITS)) & BIT_MASK;
+        U v_val = codebook[v_idx] * v_norm_val;
+        o[j] = o[j] * factor + exp_score * v_val;
       }
     }
 
     // Advance pointers
     k_packed += BN * k_seq_stride;
     k_norms += BN;
-    values += inner_v_stride;
+    v_packed += BN * v_seq_stride;
+    v_norms += BN;
     if (bool_mask) {
       bmask += BN * mask_kv_seq_stride;
     }
