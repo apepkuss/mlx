@@ -60,10 +60,11 @@ MLX_API array scaled_dot_product_attention(
  *  V is passed as dequantized fp16. **/
 MLX_API array turboquant_sdpa(
     const array& queries,     // pre-rotated (B, H_q, T_q, D)
-    const array& k_packed,    // packed uint32 (B, H_kv, T_kv, packed_dim)
-    const array& values,      // dequantized V (B, H_kv, T_kv, D)
-    const array& k_norms,     // per-vector norms (B, H_kv, T_kv)
-    const array& codebook,    // centroids (n_levels,)
+    const array& k_packed,    // bit-packed K (B, H_kv, T_kv, packed_dim) uint32
+    const array& v_packed,    // bit-packed V (B, H_kv, T_kv, packed_dim) uint32
+    const array& k_norms,     // per-vector K norms (B, H_kv, T_kv)
+    const array& codebook,    // shared K+V centroids (n_levels,)
+    const array& v_norms,     // per-vector V norms (B, H_kv, T_kv)
     float scale,
     int bits = 3,
     const std::string& mask_mode = "",
