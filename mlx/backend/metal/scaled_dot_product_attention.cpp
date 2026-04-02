@@ -820,7 +820,9 @@ void TurboQuantSDPA::eval_gpu(
   };
 
   const auto& q = ensure_contiguous(q_pre);
+  const auto& kp = ensure_contiguous(inputs[1]);
   const auto& v = ensure_contiguous(v_pre);
+  const auto& kn = ensure_contiguous(inputs[3]);
 
   // Allocate output
   if (q.is_donatable() && q.flags().row_contiguous && q.size() == o.size()) {
@@ -844,13 +846,13 @@ void TurboQuantSDPA::eval_gpu(
   kname += "_vpw";
   kname += std::to_string(vpw);
 
-  int gqa_factor = q.shape(1) / k_packed.shape(1);
-  int N = k_norms.shape(2);
-  size_t k_head_stride = k_packed.strides()[1];
-  size_t k_seq_stride = k_packed.strides()[2];
+  int gqa_factor = q.shape(1) / kp.shape(1);
+  int N = kn.shape(2);
+  size_t k_head_stride = kp.strides()[1];
+  size_t k_seq_stride = kp.strides()[2];
   size_t v_head_stride = v.strides()[1];
   size_t v_seq_stride = v.strides()[2];
-  size_t k_norm_head_stride = k_norms.strides()[1];
+  size_t k_norm_head_stride = kn.strides()[1];
 
   bool has_mask = has_mask_;
   bool bool_mask = false;
@@ -881,7 +883,7 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_compute_pipeline_state(kernel);
 
   compute_encoder.set_input_array(q, 0);
-  compute_encoder.set_input_array(k_packed, 1);
+  compute_encoder.set_input_array(kp, 1);
   compute_encoder.set_input_array(v, 2);
   compute_encoder.set_output_array(o, 3);
   compute_encoder.set_bytes(gqa_factor, 4);
@@ -904,7 +906,7 @@ void TurboQuantSDPA::eval_gpu(
     compute_encoder.set_bytes(head_stride, 15);
   }
 
-  compute_encoder.set_input_array(k_norms, 18);
+  compute_encoder.set_input_array(kn, 18);
   compute_encoder.set_bytes(k_norm_head_stride, 19);
   compute_encoder.set_input_array(codebook, 20);
 

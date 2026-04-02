@@ -117,14 +117,18 @@ template <typename T, int D, int V_DIM = D, int BITS = 3, int VPW = 10>
       use_key = (fmask[0] >= -1e9f);
     }
     if (use_key) {
-      // --- TurboQuant: read K indices, codebook lookup ---
-      // K indices are stored as per-element uint32 (not bit-packed).
-      // Each k_packed element contains a single codebook index (0..2^BITS-1).
+      // --- TurboQuant: read bit-packed K indices, codebook lookup ---
+      // K indices are bit-packed: VPW values per uint32 word.
+      // 3-bit: 10 values per word (30 of 32 bits used).
+      // 4-bit: 8 values per word (32 bits used).
       U score = 0;
       int elem_start = simd_lid * qk_per_thread;
       for (int j = 0; j < qk_per_thread; j++) {
         int elem = elem_start + j;
-        uint idx = k_packed[elem] & BIT_MASK;
+        int word_idx = elem / VPW;
+        int pos_in_word = elem % VPW;
+        uint word = k_packed[word_idx];
+        uint idx = (word >> (pos_in_word * BITS)) & BIT_MASK;
         U k_val = codebook[idx];
         score += q[j] * k_val;
       }
