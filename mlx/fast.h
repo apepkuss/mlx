@@ -58,14 +58,20 @@ MLX_API array scaled_dot_product_attention(
  *  K is stored as packed uint32 indices with per-vector norms.
  *  Queries must be pre-rotated: Q_rot = WHT(signs * Q).
  *  V is passed as dequantized fp16. **/
+/** TurboQuant SDPA: attention with bit-packed K cache and optional V compression.
+ *  K is stored as packed uint32 indices with per-vector norms.
+ *  V can be fp16 (v_bits=0) or bit-packed (v_bits=3,4) with v_norms.
+ *  Queries must be pre-rotated: Q_rot = WHT(signs * Q). **/
 MLX_API array turboquant_sdpa(
     const array& queries,     // pre-rotated (B, H_q, T_q, D)
-    const array& k_packed,    // packed uint32 (B, H_kv, T_kv, packed_dim)
-    const array& values,      // dequantized V (B, H_kv, T_kv, D)
-    const array& k_norms,     // per-vector norms (B, H_kv, T_kv)
+    const array& k_packed,    // bit-packed K (B, H_kv, T_kv, k_packed_dim)
+    const array& values,      // fp16 V or bit-packed V depending on v_bits
+    const array& k_norms,     // per-vector K norms (B, H_kv, T_kv)
     const array& codebook,    // centroids (n_levels,)
     float scale,
-    int bits = 3,
+    int k_bits = 3,
+    int v_bits = 0,           // 0 = fp16, 3 or 4 = compressed
+    const std::optional<array>& v_norms = {},  // required when v_bits > 0
     const std::string& mask_mode = "",
     std::optional<array> mask_arr = {},
     StreamOrDevice s = {});

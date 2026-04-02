@@ -962,7 +962,9 @@ array turboquant_sdpa(
     const array& k_norms,
     const array& codebook,
     float scale,
-    int bits,
+    int k_bits,
+    int v_bits,
+    const std::optional<array>& v_norms,
     const std::string& mask_mode,
     std::optional<array> mask_arr,
     StreamOrDevice s) {
@@ -974,18 +976,21 @@ array turboquant_sdpa(
   bool do_causal = mask_mode == "causal";
   auto final_type = queries.dtype();
 
-  // CPU fallback: not supported
   auto fallback = [](const std::vector<array>&) -> std::vector<array> {
     throw std::runtime_error("[turboquant_sdpa] CPU fallback not supported");
   };
 
+  // inputs: [queries, k_packed, values, k_norms, codebook, (v_norms), (mask)]
   bool has_mask = mask_arr.has_value();
   std::vector<array> inputs = {
       astype(queries, final_type, s),
       astype(k_packed, uint32, s),
-      astype(values, final_type, s),
+      v_bits > 0 ? astype(values, uint32, s) : astype(values, final_type, s),
       astype(k_norms, float32, s),
       astype(codebook, float32, s)};
+  if (v_bits > 0 && v_norms.has_value()) {
+    inputs.push_back(astype(*v_norms, float32, s));
+  }
   if (has_mask) {
     inputs.push_back(*mask_arr);
   }
@@ -994,7 +999,7 @@ array turboquant_sdpa(
       queries.shape(),
       final_type,
       std::make_shared<TurboQuantSDPA>(
-          to_stream(s), fallback, scale, do_causal, bits, has_mask),
+          to_stream(s), fallback, scale, do_causal, k_bits, v_bits, has_mask),
       std::move(inputs));
 
   return out;
@@ -1003,7 +1008,7 @@ array turboquant_sdpa(
 bool TurboQuantSDPA::is_equivalent(const Primitive& other) const {
   const TurboQuantSDPA& a_other = static_cast<const TurboQuantSDPA&>(other);
   return scale_ == a_other.scale_ && do_causal_ == a_other.do_causal_ &&
-      bits_ == a_other.bits_;
+      k_bits_ == a_other.k_bits_ && v_bits_ == a_other.v_bits_;
 }
 
 } // namespace mlx::core::fast

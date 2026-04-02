@@ -45,22 +45,27 @@ instantiate_sdpa_vector_heads(float16_t)
 // TurboQuant SDPA: bit-packed K with codebook dequant
 #include "mlx/backend/metal/kernels/sdpa_vector_turbo.h"
 
-#define instantiate_sdpa_vector_turbo(type, qk_dim, value_dim, bits, vpw) \
-  instantiate_kernel(                                                      \
-      "sdpa_vector_turbo_" #type "_" #qk_dim "_" #value_dim                \
-      "_b" #bits "_vpw" #vpw,                                             \
-      sdpa_vector_turbo,                                                   \
-      type,                                                                \
-      qk_dim,                                                              \
-      value_dim,                                                           \
-      bits,                                                                \
-      vpw)
+// Instantiate with K_BITS, K_VPW, V_BITS, V_VPW
+#define instantiate_sdpa_vector_turbo(type, dim, kb, kvpw, vb, vvpw) \
+  instantiate_kernel(                                                 \
+      "sdpa_vector_turbo_" #type "_" #dim                             \
+      "_kb" #kb "_kvpw" #kvpw "_vb" #vb "_vvpw" #vvpw,              \
+      sdpa_vector_turbo,                                              \
+      type,                                                           \
+      dim,                                                            \
+      dim,                                                            \
+      kb,                                                             \
+      kvpw,                                                           \
+      vb,                                                             \
+      vvpw)
 
-#define instantiate_sdpa_vector_turbo_heads(type)             \
-  instantiate_sdpa_vector_turbo(type, 64, 64, 3, 10)          \
-  instantiate_sdpa_vector_turbo(type, 128, 128, 3, 10)        \
-  instantiate_sdpa_vector_turbo(type, 64, 64, 4, 8)           \
-  instantiate_sdpa_vector_turbo(type, 128, 128, 4, 8)
+#define instantiate_sdpa_vector_turbo_heads(type)                     \
+  instantiate_sdpa_vector_turbo(type, 128, 3, 10, 0, 8)              \
+  instantiate_sdpa_vector_turbo(type, 128, 3, 10, 4, 8)              \
+  instantiate_sdpa_vector_turbo(type, 128, 4, 8, 0, 8)               \
+  instantiate_sdpa_vector_turbo(type, 128, 4, 8, 4, 8)               \
+  instantiate_sdpa_vector_turbo(type, 64, 3, 10, 0, 8)               \
+  instantiate_sdpa_vector_turbo(type, 64, 3, 10, 4, 8)
 
 instantiate_sdpa_vector_turbo_heads(float16_t)
 instantiate_sdpa_vector_turbo_heads(bfloat16_t)

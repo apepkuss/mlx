@@ -832,19 +832,22 @@ void TurboQuantSDPA::eval_gpu(
   }
 
   int D = q.shape(-1);
-  int vpw = bits_ == 3 ? 10 : (bits_ == 4 ? 8 : 32);
+  int k_vpw = k_bits_ == 3 ? 10 : (k_bits_ == 4 ? 8 : 32);
+  int v_vpw = v_bits_ == 4 ? 8 : (v_bits_ == 3 ? 10 : 8);
 
-  // Kernel name
+  // Kernel name: sdpa_vector_turbo_<type>_<D>_kb<K_BITS>_kvpw<K_VPW>_vb<V_BITS>_vvpw<V_VPW>
   std::string kname = "sdpa_vector_turbo_";
   kname += get_type_string(q.dtype());
   kname += "_";
   kname += std::to_string(D);
-  kname += "_";
-  kname += std::to_string(v.shape(-1));
-  kname += "_b";
-  kname += std::to_string(bits_);
-  kname += "_vpw";
-  kname += std::to_string(vpw);
+  kname += "_kb";
+  kname += std::to_string(k_bits_);
+  kname += "_kvpw";
+  kname += std::to_string(k_vpw);
+  kname += "_vb";
+  kname += std::to_string(v_bits_);
+  kname += "_vvpw";
+  kname += std::to_string(v_vpw);
 
   int gqa_factor = q.shape(1) / kp.shape(1);
   int N = kn.shape(2);
@@ -894,8 +897,9 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_bytes(v_seq_stride, 9);
   compute_encoder.set_bytes(scale_, 10);
 
-  if (has_mask && inputs.size() > 5) {
-    auto& mask = inputs[5];
+  int mask_idx = 5 + (v_bits_ > 0 ? 1 : 0);
+  if (has_mask && mask_idx < (int)inputs.size()) {
+    auto& mask = inputs[mask_idx];
     compute_encoder.set_input_array(mask, 11 + (float_mask ? 1 : 0));
     int32_t kv_seq_stride = mask.shape(3) > 1 ? mask.strides(3) : 0;
     int32_t q_seq_stride = mask.shape(2) > 1 ? mask.strides(2) : 0;
@@ -909,6 +913,17 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_input_array(kn, 18);
   compute_encoder.set_bytes(k_norm_head_stride, 19);
   compute_encoder.set_input_array(codebook, 20);
+
+  // V norms (when v_bits > 0): located after codebook in inputs
+  if (v_bits_ > 0) {
+    int vn_idx = 5; // inputs[5] = v_norms when v_bits > 0
+    if (vn_idx < (int)inputs.size()) {
+      auto& vn_arr = inputs[vn_idx];
+      compute_encoder.set_input_array(vn_arr, 21);
+      size_t v_norm_head_stride = vn_arr.strides()[1];
+      compute_encoder.set_bytes(v_norm_head_stride, 22);
+    }
+  }
 
   MTL::Size group_dims(1024, 1, 1);
   MTL::Size grid_dims(q.shape(0) * q.shape(1), q.shape(2), 1);

@@ -302,12 +302,14 @@ class TurboQuantSDPA : public Custom {
       std::function<std::vector<array>(std::vector<array>)> fallback,
       float scale,
       bool do_causal,
-      int bits,
+      int k_bits,
+      int v_bits,
       bool has_mask)
       : Custom(stream, std::move(fallback)),
         scale_(scale),
         do_causal_(do_causal),
-        bits_(bits),
+        k_bits_(k_bits),
+        v_bits_(v_bits),
         has_mask_(has_mask) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
@@ -326,7 +328,8 @@ class TurboQuantSDPA : public Custom {
  private:
   float scale_;
   bool do_causal_;
-  int bits_;
+  int k_bits_;
+  int v_bits_;
   bool has_mask_;
 };
 
