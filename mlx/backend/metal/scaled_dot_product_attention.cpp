@@ -798,20 +798,19 @@ void ScaledDotProductAttentionVJP::eval_gpu(
 void TurboQuantSDPA::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // inputs: [queries, k_packed, v_packed, k_norms, codebook, v_norms, (mask)]
+  // inputs: [queries, k_packed, values, k_norms, codebook, (optional) mask]
   auto& q_pre = inputs[0];
-  auto& k_packed_pre = inputs[1];
-  auto& v_packed_pre = inputs[2];
-  auto& k_norms_pre = inputs[3];
+  auto& k_packed = inputs[1];
+  auto& v_pre = inputs[2];
+  auto& k_norms = inputs[3];
   auto& codebook = inputs[4];
-  auto& v_norms_pre = inputs[5];
   auto& o = outputs[0];
 
   auto& s = stream();
   auto& d = metal::device(s.device);
 
   std::vector<array> copies;
-  copies.reserve(6);
+  copies.reserve(4);
   auto ensure_contiguous = [&copies, &s](const array& arr) -> const array& {
     if (arr.flags().row_contiguous || arr.strides().back() == 1) {
       return arr;
@@ -821,10 +820,9 @@ void TurboQuantSDPA::eval_gpu(
   };
 
   const auto& q = ensure_contiguous(q_pre);
-  const auto& kp = ensure_contiguous(k_packed_pre);
-  const auto& vp = ensure_contiguous(v_packed_pre);
-  const auto& kn = ensure_contiguous(k_norms_pre);
-  const auto& vn = ensure_contiguous(v_norms_pre);
+  const auto& kp = ensure_contiguous(inputs[1]);
+  const auto& v = ensure_contiguous(v_pre);
+  const auto& kn = ensure_contiguous(inputs[3]);
 
   // Allocate output
   if (q.is_donatable() && q.flags().row_contiguous && q.size() == o.size()) {
@@ -852,10 +850,9 @@ void TurboQuantSDPA::eval_gpu(
   int N = kn.shape(2);
   size_t k_head_stride = kp.strides()[1];
   size_t k_seq_stride = kp.strides()[2];
-  size_t v_head_stride = vp.strides()[1];
-  size_t v_seq_stride = vp.strides()[2];
+  size_t v_head_stride = v.strides()[1];
+  size_t v_seq_stride = v.strides()[2];
   size_t k_norm_head_stride = kn.strides()[1];
-  size_t v_norm_head_stride = vn.strides()[1];
 
   bool has_mask = has_mask_;
   bool bool_mask = false;
@@ -887,7 +884,7 @@ void TurboQuantSDPA::eval_gpu(
 
   compute_encoder.set_input_array(q, 0);
   compute_encoder.set_input_array(kp, 1);
-  compute_encoder.set_input_array(vp, 2);
+  compute_encoder.set_input_array(v, 2);
   compute_encoder.set_output_array(o, 3);
   compute_encoder.set_bytes(gqa_factor, 4);
   compute_encoder.set_bytes(N, 5);
@@ -897,9 +894,8 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_bytes(v_seq_stride, 9);
   compute_encoder.set_bytes(scale_, 10);
 
-  // mask is at inputs[6] (after v_norms)
-  if (has_mask && inputs.size() > 6) {
-    auto& mask = inputs[6];
+  if (has_mask && inputs.size() > 5) {
+    auto& mask = inputs[5];
     compute_encoder.set_input_array(mask, 11 + (float_mask ? 1 : 0));
     int32_t kv_seq_stride = mask.shape(3) > 1 ? mask.strides(3) : 0;
     int32_t q_seq_stride = mask.shape(2) > 1 ? mask.strides(2) : 0;
@@ -913,8 +909,6 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_input_array(kn, 18);
   compute_encoder.set_bytes(k_norm_head_stride, 19);
   compute_encoder.set_input_array(codebook, 20);
-  compute_encoder.set_input_array(vn, 21);
-  compute_encoder.set_bytes(v_norm_head_stride, 22);
 
   MTL::Size group_dims(1024, 1, 1);
   MTL::Size grid_dims(q.shape(0) * q.shape(1), q.shape(2), 1);
