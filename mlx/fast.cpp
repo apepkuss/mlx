@@ -960,7 +960,7 @@ array turboquant_sdpa(
     const array& k_packed,
     const array& values,
     const array& k_norms,
-    const array& codebook,
+    const array& k_codebook, const array& v_codebook,
     float scale,
     int k_bits,
     int v_bits,
@@ -987,7 +987,7 @@ array turboquant_sdpa(
       astype(k_packed, uint32, s),
       v_bits > 0 ? astype(values, uint32, s) : astype(values, final_type, s),
       astype(k_norms, float32, s),
-      astype(codebook, float32, s)};
+      astype(k_codebook, float32, s), astype(v_codebook, float32, s)};
   if (v_bits > 0 && v_norms.has_value()) {
     inputs.push_back(astype(*v_norms, float32, s));
   }

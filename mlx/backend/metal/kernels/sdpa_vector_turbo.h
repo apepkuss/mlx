@@ -47,9 +47,10 @@ template <typename T, int D, int V_DIM = D, int K_BITS = 3, int K_VPW = 10,
     [[buffer(17), function_constant(has_sinks)]],
     const device float* k_norms [[buffer(18)]],
     const constant size_t& k_norm_head_stride [[buffer(19)]],
-    const device float* codebook [[buffer(20)]],
-    const device float* v_norms [[buffer(21)]],
-    const constant size_t& v_norm_head_stride [[buffer(22)]],
+    const device float* k_codebook [[buffer(20)]],
+    const device float* v_codebook [[buffer(21)]],
+    const device float* v_norms [[buffer(22)]],
+    const constant size_t& v_norm_head_stride [[buffer(23)]],
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -147,7 +148,7 @@ template <typename T, int D, int V_DIM = D, int K_BITS = 3, int K_VPW = 10,
         int pos_in_word = elem % K_VPW;
         uint word = k_packed[word_idx];
         uint idx = (word >> (pos_in_word * K_BITS)) & K_BIT_MASK;
-        U k_val = codebook[idx];
+        U k_val = k_codebook[idx];
         score += q[j] * k_val;
       }
 
@@ -183,7 +184,7 @@ template <typename T, int D, int V_DIM = D, int K_BITS = 3, int K_VPW = 10,
           int vp = ve % V_VPW;
           uint vword = v_packed[vw];
           uint vidx = (vword >> (vp * V_BITS)) & V_BIT_MASK;
-          U vval = codebook[vidx] * vn;
+          U vval = v_codebook[vidx] * vn;
           o[j] = o[j] * factor + exp_score * vval;
         }
       }

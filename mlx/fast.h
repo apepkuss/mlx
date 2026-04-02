@@ -67,7 +67,8 @@ MLX_API array turboquant_sdpa(
     const array& k_packed,    // bit-packed K (B, H_kv, T_kv, k_packed_dim)
     const array& values,      // fp16 V or bit-packed V depending on v_bits
     const array& k_norms,     // per-vector K norms (B, H_kv, T_kv)
-    const array& codebook,    // centroids (n_levels,)
+    const array& k_codebook,  // K centroids (2^k_bits,)
+    const array& v_codebook,  // V centroids (2^v_bits,) — ignored when v_bits=0
     float scale,
     int k_bits = 3,
     int v_bits = 0,           // 0 = fp16, 3 or 4 = compressed
