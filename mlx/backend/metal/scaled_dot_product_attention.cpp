@@ -842,7 +842,7 @@ void TurboQuantSDPA::eval_gpu(
   kname += "_";
   kname += std::to_string(D);
   kname += "_";
-  kname += std::to_string(D);
+  kname += std::to_string(v.shape(-1));
   kname += "_b";
   kname += std::to_string(bits_);
   kname += "_vpw";
