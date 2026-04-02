@@ -798,7 +798,7 @@ void ScaledDotProductAttentionVJP::eval_gpu(
 void TurboQuantSDPA::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // inputs: [queries, k_packed, values, k_norms, codebook]
+  // inputs: [queries, k_packed, values, k_norms, codebook, (optional) mask]
   auto& q_pre = inputs[0];
   auto& k_packed = inputs[1];
   auto& v_pre = inputs[2];
@@ -852,9 +852,14 @@ void TurboQuantSDPA::eval_gpu(
   size_t v_seq_stride = v.strides()[2];
   size_t k_norm_head_stride = k_norms.strides()[1];
 
-  bool has_mask = false;
+  bool has_mask = has_mask_;
   bool bool_mask = false;
   bool float_mask = false;
+  if (has_mask && inputs.size() > 5) {
+    auto& mask = inputs[5];
+    bool_mask = mask.dtype() == bool_;
+    float_mask = !bool_mask;
+  }
   bool query_transposed = !q.flags().row_contiguous;
   bool has_sinks = false;
   metal::MTLFCList func_consts = {
@@ -867,7 +872,7 @@ void TurboQuantSDPA::eval_gpu(
   };
 
   std::string hash_name = kname;
-  hash_name += "_nomask";
+  hash_name += has_mask ? (bool_mask ? "_boolmask" : "_floatmask") : "_nomask";
   hash_name += query_transposed ? "_qt" : "_qnt";
   hash_name += do_causal_ ? "_c" : "_nc";
 
@@ -886,7 +891,19 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_bytes(v_head_stride, 8);
   compute_encoder.set_bytes(v_seq_stride, 9);
   compute_encoder.set_bytes(scale_, 10);
-  // buffers 11-17 unused (no mask/sinks)
+
+  if (has_mask && inputs.size() > 5) {
+    auto& mask = inputs[5];
+    compute_encoder.set_input_array(mask, 11 + (float_mask ? 1 : 0));
+    int32_t kv_seq_stride = mask.shape(3) > 1 ? mask.strides(3) : 0;
+    int32_t q_seq_stride = mask.shape(2) > 1 ? mask.strides(2) : 0;
+    int32_t head_stride =
+        mask.shape(1) > 1 ? mask.strides(1) : (mask.shape(0) > 1 ? mask.strides(0) : 0);
+    compute_encoder.set_bytes(kv_seq_stride, 13);
+    compute_encoder.set_bytes(q_seq_stride, 14);
+    compute_encoder.set_bytes(head_stride, 15);
+  }
+
   compute_encoder.set_input_array(k_norms, 18);
   compute_encoder.set_bytes(k_norm_head_stride, 19);
   compute_encoder.set_input_array(codebook, 20);
