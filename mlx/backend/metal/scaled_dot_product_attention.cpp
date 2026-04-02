@@ -798,12 +798,13 @@ void ScaledDotProductAttentionVJP::eval_gpu(
 void TurboQuantSDPA::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
-  // inputs: [queries, k_packed, values, k_norms, codebook, (optional) mask]
+  // inputs: [queries, k_packed, v, k_norms, k_codebook, v_codebook, (v_norms), (mask)]
   auto& q_pre = inputs[0];
   auto& k_packed = inputs[1];
   auto& v_pre = inputs[2];
   auto& k_norms = inputs[3];
-  auto& codebook = inputs[4];
+  auto& k_codebook = inputs[4];
+  auto& v_codebook = inputs[5];
   auto& o = outputs[0];
 
   auto& s = stream();
@@ -897,7 +898,7 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_bytes(v_seq_stride, 9);
   compute_encoder.set_bytes(scale_, 10);
 
-  int mask_idx = 5 + (v_bits_ > 0 ? 1 : 0);
+  int mask_idx = 6 + (v_bits_ > 0 ? 1 : 0);
   if (has_mask && mask_idx < (int)inputs.size()) {
     auto& mask = inputs[mask_idx];
     compute_encoder.set_input_array(mask, 11 + (float_mask ? 1 : 0));
@@ -912,17 +913,15 @@ void TurboQuantSDPA::eval_gpu(
 
   compute_encoder.set_input_array(kn, 18);
   compute_encoder.set_bytes(k_norm_head_stride, 19);
-  compute_encoder.set_input_array(codebook, 20);
+  compute_encoder.set_input_array(k_codebook, 20);
+  compute_encoder.set_input_array(v_codebook, 21);
 
-  // V norms (when v_bits > 0): located after codebook in inputs
-  if (v_bits_ > 0) {
-    int vn_idx = 5; // inputs[5] = v_norms when v_bits > 0
-    if (vn_idx < (int)inputs.size()) {
-      auto& vn_arr = inputs[vn_idx];
-      compute_encoder.set_input_array(vn_arr, 21);
-      size_t v_norm_head_stride = vn_arr.strides()[1];
-      compute_encoder.set_bytes(v_norm_head_stride, 22);
-    }
+  // V norms (when v_bits > 0): inputs[6]
+  if (v_bits_ > 0 && inputs.size() > 6) {
+    auto& vn_arr = inputs[6];
+    compute_encoder.set_input_array(vn_arr, 22);
+    size_t v_norm_head_stride = vn_arr.strides()[1];
+    compute_encoder.set_bytes(v_norm_head_stride, 23);
   }
 
   MTL::Size group_dims(1024, 1, 1);
