@@ -979,16 +979,23 @@ array turboquant_sdpa(
     throw std::runtime_error("[turboquant_sdpa] CPU fallback not supported");
   };
 
+  bool has_mask = mask_arr.has_value();
+  std::vector<array> inputs = {
+      astype(queries, final_type, s),
+      astype(k_packed, uint32, s),
+      astype(values, final_type, s),
+      astype(k_norms, float32, s),
+      astype(codebook, float32, s)};
+  if (has_mask) {
+    inputs.push_back(*mask_arr);
+  }
+
   auto out = array(
       queries.shape(),
       final_type,
       std::make_shared<TurboQuantSDPA>(
-          to_stream(s), fallback, scale, do_causal, bits),
-      {astype(queries, final_type, s),
-       astype(k_packed, uint32, s),
-       astype(values, final_type, s),
-       astype(k_norms, float32, s),
-       astype(codebook, float32, s)});
+          to_stream(s), fallback, scale, do_causal, bits, has_mask),
+      std::move(inputs));
 
   return out;
 }
