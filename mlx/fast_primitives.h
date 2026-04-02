@@ -302,11 +302,13 @@ class TurboQuantSDPA : public Custom {
       std::function<std::vector<array>(std::vector<array>)> fallback,
       float scale,
       bool do_causal,
-      int bits)
+      int bits,
+      bool has_mask)
       : Custom(stream, std::move(fallback)),
         scale_(scale),
         do_causal_(do_causal),
-        bits_(bits) {}
+        bits_(bits),
+        has_mask_(has_mask) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override {
@@ -325,6 +327,7 @@ class TurboQuantSDPA : public Custom {
   float scale_;
   bool do_causal_;
   int bits_;
+  bool has_mask_;
 };
 
 class ConvertFP8 : public Primitive {
