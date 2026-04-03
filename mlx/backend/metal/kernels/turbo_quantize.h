@@ -35,7 +35,11 @@ template <typename T, int D, int BITS, int N_LVLS, int VPW>
     uint lid [[thread_index_in_threadgroup]]) {
 
   constexpr int PACKED_DIM = (D + VPW - 1) / VPW;
-  constexpr float WHT_SCALE = 1.0f / sqrt(float(D));
+  // 1/sqrt(D) — precompute at compile time via reciprocal sqrt table
+  // D is always a power of 2 (64 or 128)
+  constexpr float WHT_SCALE = (D == 128) ? 0.08838834764831845f  // 1/sqrt(128)
+                             : (D == 64)  ? 0.125f               // 1/sqrt(64)
+                                          : 0.0f;
 
   int vec_id = tid;
   if (vec_id >= total_vectors) return;
