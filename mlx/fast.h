@@ -77,6 +77,16 @@ MLX_API array turboquant_sdpa(
     std::optional<array> mask_arr = {},
     StreamOrDevice s = {});
 
+/** Fused TurboQuant quantize: norm + WHT + nearest centroid + norm correction + bit-pack.
+ *  Returns {packed_indices (uint32), adjusted_norms (float32)}.
+ *  Input shape: [..., D], output packed: [..., packed_dim], norms: [...] **/
+MLX_API std::vector<array> turbo_quantize(
+    const array& input,       // [..., D] float16/bfloat16
+    const array& signs,       // [D] float32
+    const array& codebook,    // [2^bits] float32
+    int bits,                 // 3 or 4
+    StreamOrDevice s = {});
+
 using TemplateArg = std::variant<int, bool, Dtype>;
 using ScalarArg = std::variant<bool, int, float>;
 

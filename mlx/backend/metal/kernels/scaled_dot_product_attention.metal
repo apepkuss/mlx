@@ -69,4 +69,27 @@ instantiate_sdpa_vector_heads(float16_t)
 
 instantiate_sdpa_vector_turbo_heads(float16_t)
 instantiate_sdpa_vector_turbo_heads(bfloat16_t)
+
+// Fused TurboQuant quantize: norm + WHT + nearest centroid + norm correction + bit-pack
+#include "mlx/backend/metal/kernels/turbo_quantize.h"
+
+#define instantiate_turbo_quantize(type, dim, bits, nlevels, vpw) \
+  instantiate_kernel(                                              \
+      "turbo_quantize_" #type "_" #dim                             \
+      "_b" #bits "_nl" #nlevels "_vpw" #vpw,                      \
+      turbo_quantize,                                              \
+      type,                                                        \
+      dim,                                                         \
+      bits,                                                        \
+      nlevels,                                                     \
+      vpw)
+
+#define instantiate_turbo_quantize_heads(type)                     \
+  instantiate_turbo_quantize(type, 128, 3, 8, 10)                 \
+  instantiate_turbo_quantize(type, 128, 4, 16, 8)                 \
+  instantiate_turbo_quantize(type, 64, 3, 8, 10)                  \
+  instantiate_turbo_quantize(type, 64, 4, 16, 8)
+
+instantiate_turbo_quantize_heads(float16_t)
+instantiate_turbo_quantize_heads(bfloat16_t)
     // clang-format on
