@@ -87,13 +87,13 @@ template <typename T, int D, int BITS, int N_LVLS, int VPW>
   s_vec[lid] = signed_val;
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  for (int half = 1; half < D; half <<= 1) {
-    uint partner = lid ^ half;
+  for (int hstep = 1; hstep < D; hstep <<= 1) {
+    uint partner = lid ^ hstep;
     float my_val = s_vec[lid];
     float other_val = s_vec[partner];
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    if (!(lid & half)) {
+    if (!(lid & hstep)) {
       s_vec[lid] = my_val + other_val;   // lower index: a + b
     } else {
       s_vec[lid] = other_val - my_val;   // upper index: a - b
