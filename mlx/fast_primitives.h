@@ -333,6 +333,35 @@ class TurboQuantSDPA : public Custom {
   bool has_mask_;
 };
 
+class TurboQuantize : public Custom {
+ public:
+  TurboQuantize(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int bits,
+      int head_dim)
+      : Custom(stream, std::move(fallback)),
+        bits_(bits),
+        head_dim_(head_dim) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("[TurboQuantize] CPU not supported");
+  }
+
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  bool is_equivalent(const Primitive& other) const override;
+
+  DEFINE_NAME(TurboQuantize);
+  DEFINE_INPUT_OUTPUT_SHAPE()
+
+ private:
+  int bits_;
+  int head_dim_;
+};
+
 class ConvertFP8 : public Primitive {
  public:
   explicit ConvertFP8(Stream stream, bool to_fp8)

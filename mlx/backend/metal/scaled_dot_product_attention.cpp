@@ -795,6 +795,76 @@ void ScaledDotProductAttentionVJP::eval_gpu(
   throw std::runtime_error("NYI");
 }
 
+void TurboQuantize::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  // inputs: [input, signs, codebook]
+  auto& input_pre = inputs[0];
+  auto& signs = inputs[1];
+  auto& codebook = inputs[2];
+  auto& packed_out = outputs[0];
+  auto& norms_out = outputs[1];
+
+  auto& s = stream();
+  auto& d = metal::device(s.device);
+
+  std::vector<array> copies;
+  copies.reserve(2);
+  auto ensure_contiguous = [&copies, &s](const array& arr) -> const array& {
+    if (arr.flags().row_contiguous || arr.strides().back() == 1) {
+      return arr;
+    }
+    copies.push_back(contiguous_copy_gpu(arr, s));
+    return copies.back();
+  };
+
+  const auto& input = ensure_contiguous(input_pre);
+
+  // Allocate outputs
+  packed_out.set_data(allocator::malloc(packed_out.nbytes()));
+  norms_out.set_data(allocator::malloc(norms_out.nbytes()));
+
+  int D = head_dim_;
+  int n_levels = 1 << bits_;
+  int vpw = bits_ == 3 ? 10 : 8;
+
+  // Kernel name: turbo_quantize_<type>_<D>_b<BITS>_nl<N_LEVELS>_vpw<VPW>
+  std::string kname = "turbo_quantize_";
+  kname += get_type_string(input.dtype());
+  kname += "_";
+  kname += std::to_string(D);
+  kname += "_b";
+  kname += std::to_string(bits_);
+  kname += "_nl";
+  kname += std::to_string(n_levels);
+  kname += "_vpw";
+  kname += std::to_string(vpw);
+
+  auto kernel = d.get_kernel(kname);
+  auto& compute_encoder = d.get_command_encoder(s.index);
+  compute_encoder.set_compute_pipeline_state(kernel);
+
+  // Total vectors = product of all dims except last
+  int total_vectors = 1;
+  for (int i = 0; i < input.ndim() - 1; i++) {
+    total_vectors *= input.shape(i);
+  }
+
+  compute_encoder.set_input_array(input, 0);
+  compute_encoder.set_input_array(signs, 1);
+  compute_encoder.set_input_array(codebook, 2);
+  compute_encoder.set_output_array(packed_out, 3);
+  compute_encoder.set_output_array(norms_out, 4);
+  compute_encoder.set_bytes(total_vectors, 5);
+
+  // One threadgroup per vector, D threads per threadgroup
+  MTL::Size group_dims(D, 1, 1);
+  MTL::Size grid_dims(total_vectors, 1, 1);
+  compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+
+  d.add_temporaries(std::move(copies), s.index);
+}
+
 void TurboQuantSDPA::eval_gpu(
     const std::vector<array>& inputs,
     std::vector<array>& outputs) {
