@@ -955,6 +955,59 @@ bool ConvertFP8::is_equivalent(const Primitive& other) const {
   return to_fp8_ == a_other.to_fp8_;
 }
 
+std::vector<array> turbo_quantize(
+    const array& input,
+    const array& signs,
+    const array& codebook,
+    int bits,
+    StreamOrDevice s) {
+  if (bits != 3 && bits != 4) {
+    throw std::invalid_argument(
+        "[turbo_quantize] bits must be 3 or 4, got " + std::to_string(bits));
+  }
+  int D = input.shape(-1);
+  if (D != 64 && D != 128) {
+    throw std::invalid_argument(
+        "[turbo_quantize] head_dim must be 64 or 128, got " +
+        std::to_string(D));
+  }
+
+  int vpw = bits == 3 ? 10 : 8;
+  int packed_dim = (D + vpw - 1) / vpw;
+
+  // Output shapes: packed = [..., packed_dim], norms = [...]
+  auto batch_shape = input.shape();
+  batch_shape.pop_back();
+
+  auto packed_shape = batch_shape;
+  packed_shape.push_back(packed_dim);
+
+  auto norms_shape = batch_shape;
+
+  auto fallback = [](const std::vector<array>&) -> std::vector<array> {
+    throw std::runtime_error("[turbo_quantize] CPU fallback not supported");
+  };
+
+  auto stream = to_stream(s);
+  auto prim = std::make_shared<TurboQuantize>(stream, fallback, bits, D);
+
+  std::vector<array> inputs = {
+      astype(input, input.dtype(), s),
+      astype(signs, float32, s),
+      astype(codebook, float32, s)};
+
+  return array::make_arrays(
+      {std::move(packed_shape), std::move(norms_shape)},
+      {uint32, float32},
+      prim,
+      inputs);
+}
+
+bool TurboQuantize::is_equivalent(const Primitive& other) const {
+  const TurboQuantize& a_other = static_cast<const TurboQuantize&>(other);
+  return bits_ == a_other.bits_ && head_dim_ == a_other.head_dim_;
+}
+
 array turboquant_sdpa(
     const array& queries,
     const array& k_packed,
