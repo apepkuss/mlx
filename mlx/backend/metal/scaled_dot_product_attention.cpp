@@ -808,17 +808,20 @@ void TurboQuantize::eval_gpu(
   auto& s = stream();
   auto& d = metal::device(s.device);
 
+  // Kernel uses flat vec_id*D+lid addressing — must be fully row-contiguous
   std::vector<array> copies;
-  copies.reserve(2);
-  auto ensure_contiguous = [&copies, &s](const array& arr) -> const array& {
-    if (arr.flags().row_contiguous || arr.strides().back() == 1) {
+  copies.reserve(3);
+  auto ensure_row_contiguous = [&copies, &s](const array& arr) -> const array& {
+    if (arr.flags().row_contiguous) {
       return arr;
     }
     copies.push_back(contiguous_copy_gpu(arr, s));
     return copies.back();
   };
 
-  const auto& input = ensure_contiguous(input_pre);
+  const auto& input = ensure_row_contiguous(input_pre);
+  const auto& signs_c = ensure_row_contiguous(signs);
+  const auto& codebook_c = ensure_row_contiguous(codebook);
 
   // Allocate outputs
   packed_out.set_data(allocator::malloc(packed_out.nbytes()));
@@ -851,8 +854,8 @@ void TurboQuantize::eval_gpu(
   }
 
   compute_encoder.set_input_array(input, 0);
-  compute_encoder.set_input_array(signs, 1);
-  compute_encoder.set_input_array(codebook, 2);
+  compute_encoder.set_input_array(signs_c, 1);
+  compute_encoder.set_input_array(codebook_c, 2);
   compute_encoder.set_output_array(packed_out, 3);
   compute_encoder.set_output_array(norms_out, 4);
   compute_encoder.set_bytes(total_vectors, 5);
