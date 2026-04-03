@@ -991,8 +991,13 @@ std::vector<array> turbo_quantize(
   auto stream = to_stream(s);
   auto prim = std::make_shared<TurboQuantize>(stream, fallback, bits, D);
 
+  // Kernel only supports float16/bfloat16; cast float32 to bfloat16
+  auto input_type = input.dtype();
+  if (input_type == float32) {
+    input_type = bfloat16;
+  }
   std::vector<array> inputs = {
-      astype(input, input.dtype(), s),
+      astype(input, input_type, s),
       astype(signs, float32, s),
       astype(codebook, float32, s)};
 
