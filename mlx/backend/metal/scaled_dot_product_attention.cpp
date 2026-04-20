@@ -412,7 +412,7 @@ void sdpa_vector(
     compute_encoder.set_bytes(kv_seq_stride, 13);
     compute_encoder.set_bytes(q_seq_stride, 14);
     compute_encoder.set_bytes(head_stride, 15);
-    compute_encoder.set_bytes(batch_stride, 19);
+    compute_encoder.set_bytes(batch_stride, 18);
   }
   if (has_sinks) {
     compute_encoder.set_input_array(*sinks, 16);
