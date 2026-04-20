@@ -44,13 +44,15 @@ template <typename T, int D, int V_DIM = D, int K_BITS = 3, int K_VPW = 10,
     [[buffer(15), function_constant(has_mask)]],
     const device T* sinks [[buffer(16), function_constant(has_sinks)]],
     const constant int& num_q_heads
-    [[buffer(17), function_constant(has_sinks)]],
+    [[buffer(17), function_constant(has_sinks_or_mask)]],
     const device float* k_norms [[buffer(18)]],
     const constant size_t& k_norm_head_stride [[buffer(19)]],
     const device float* k_codebook [[buffer(20)]],
     const device float* v_codebook [[buffer(21)]],
     const device float* v_norms [[buffer(22)]],
     const constant size_t& v_norm_head_stride [[buffer(23)]],
+    const constant int& mask_batch_stride
+    [[buffer(24), function_constant(has_mask)]],
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -99,13 +101,22 @@ template <typename T, int D, int V_DIM = D, int K_BITS = 3, int K_VPW = 10,
     v_norms += kv_head_idx * v_norm_head_stride + simd_gid;
   }
 
-  if (bool_mask) {
-    bmask += q_batch_head_idx * mask_head_stride +
-        simd_gid * mask_kv_seq_stride + q_seq_idx * mask_q_seq_stride;
-  }
-  if (float_mask) {
-    fmask += q_batch_head_idx * mask_head_stride +
-        simd_gid * mask_kv_seq_stride + q_seq_idx * mask_q_seq_stride;
+  // Mask offset uses separate batch and head strides so broadcast
+  // layouts (e.g. `[B, 1, 1, kv]`) address the right per-batch slot.
+  // See the `sdpa_vector` kernel in `sdpa_vector.h` for the full
+  // rationale.
+  if (bool_mask || float_mask) {
+    const int batch_idx = q_batch_head_idx / num_q_heads;
+    const int head_idx = q_batch_head_idx % num_q_heads;
+    const int mask_offset = batch_idx * mask_batch_stride +
+        head_idx * mask_head_stride + simd_gid * mask_kv_seq_stride +
+        q_seq_idx * mask_q_seq_stride;
+    if (bool_mask) {
+      bmask += mask_offset;
+    }
+    if (float_mask) {
+      fmask += mask_offset;
+    }
   }
 
   out += o_offset * V_DIM + simd_gid * v_per_thread;

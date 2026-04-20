@@ -400,14 +400,27 @@ void sdpa_vector(
     compute_encoder.set_input_array(m, 11 + float_mask);
     int32_t kv_seq_stride = m.shape(3) > 1 ? m.strides(3) : 0;
     int32_t q_seq_stride = m.shape(2) > 1 ? m.strides(2) : 0;
-    int32_t head_stride =
-        m.shape(1) > 1 ? m.strides(1) : (m.shape(0) > 1 ? m.strides(0) : 0);
+    // Split the batch and head strides so broadcast masks
+    // (e.g. `[B, 1, 1, kv]`) address the correct per-batch slot.
+    // Previously `head_stride` silently fell back to `strides(0)`
+    // when the head axis was degenerate, which made the shader's
+    // `q_batch_head_idx * head_stride = (b*n_heads+h) * batch_stride`
+    // run off the end of the mask buffer for every h > 0 and for
+    // every b > 0.
+    int32_t head_stride = m.shape(1) > 1 ? m.strides(1) : 0;
+    int32_t batch_stride = m.shape(0) > 1 ? m.strides(0) : 0;
     compute_encoder.set_bytes(kv_seq_stride, 13);
     compute_encoder.set_bytes(q_seq_stride, 14);
     compute_encoder.set_bytes(head_stride, 15);
+    compute_encoder.set_bytes(batch_stride, 19);
   }
   if (has_sinks) {
     compute_encoder.set_input_array(*sinks, 16);
+  }
+  // `num_q_heads` is needed whenever a mask is present (to split
+  // `q_batch_head_idx` back into batch / head) or when sinks are
+  // present (for `sinks[q_batch_head_idx % num_q_heads]`).
+  if (has_sinks || has_mask) {
     compute_encoder.set_bytes(q.shape(1), 17);
   }
 
@@ -545,11 +558,15 @@ void sdpa_vector_2pass(
     compute_encoder.set_input_array(m, 13 + float_mask);
     int32_t kv_seq_stride = m.shape(3) > 1 ? m.strides(3) : 0;
     int32_t q_seq_stride = m.shape(2) > 1 ? m.strides(2) : 0;
-    int32_t head_stride =
-        m.shape(1) > 1 ? m.strides(1) : (m.shape(0) > 1 ? m.strides(0) : 0);
+    // See the `sdpa_vector` 1-pass adapter above for why we split
+    // `head_stride` and `batch_stride` instead of falling back to
+    // `strides(0)` when the head axis is degenerate.
+    int32_t head_stride = m.shape(1) > 1 ? m.strides(1) : 0;
+    int32_t batch_stride = m.shape(0) > 1 ? m.strides(0) : 0;
     compute_encoder.set_bytes(kv_seq_stride, 15);
     compute_encoder.set_bytes(q_seq_stride, 16);
     compute_encoder.set_bytes(head_stride, 17);
+    compute_encoder.set_bytes(batch_stride, 19);
   }
   if (has_sinks) {
     compute_encoder.set_input_array(*sinks, 18);
@@ -972,16 +989,22 @@ void TurboQuantSDPA::eval_gpu(
   compute_encoder.set_bytes(scale_, 10);
 
   int mask_idx = 6 + (v_bits_ > 0 ? 1 : 0);
+  bool mask_bound = false;
   if (has_mask && mask_idx < (int)inputs.size()) {
     auto& mask = inputs[mask_idx];
     compute_encoder.set_input_array(mask, 11 + (float_mask ? 1 : 0));
     int32_t kv_seq_stride = mask.shape(3) > 1 ? mask.strides(3) : 0;
     int32_t q_seq_stride = mask.shape(2) > 1 ? mask.strides(2) : 0;
-    int32_t head_stride =
-        mask.shape(1) > 1 ? mask.strides(1) : (mask.shape(0) > 1 ? mask.strides(0) : 0);
+    // See `sdpa_vector` 1-pass adapter above. Splitting the strides
+    // makes broadcast masks address the right per-batch slot instead
+    // of walking `batch_stride` once per head.
+    int32_t head_stride = mask.shape(1) > 1 ? mask.strides(1) : 0;
+    int32_t batch_stride = mask.shape(0) > 1 ? mask.strides(0) : 0;
     compute_encoder.set_bytes(kv_seq_stride, 13);
     compute_encoder.set_bytes(q_seq_stride, 14);
     compute_encoder.set_bytes(head_stride, 15);
+    compute_encoder.set_bytes(batch_stride, 24);
+    mask_bound = true;
   }
 
   compute_encoder.set_input_array(kn, 18);
@@ -995,6 +1018,15 @@ void TurboQuantSDPA::eval_gpu(
     compute_encoder.set_input_array(vn_arr, 22);
     size_t v_norm_head_stride = vn_arr.strides()[1];
     compute_encoder.set_bytes(v_norm_head_stride, 23);
+  }
+
+  // `num_q_heads` at buffer 17 is gated on `has_sinks_or_mask` in
+  // the turbo shader so the mask path can split `q_batch_head_idx`
+  // back into batch / head. The turbo SDPA in mlx doesn't support
+  // sinks today, so this is effectively driven by the mask path.
+  if (mask_bound) {
+    int32_t num_q_heads = q.shape(1);
+    compute_encoder.set_bytes(num_q_heads, 17);
   }
 
   MTL::Size group_dims(1024, 1, 1);
