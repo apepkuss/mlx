@@ -412,7 +412,7 @@ void sdpa_vector(
     compute_encoder.set_bytes(kv_seq_stride, 13);
     compute_encoder.set_bytes(q_seq_stride, 14);
     compute_encoder.set_bytes(head_stride, 15);
-    compute_encoder.set_bytes(batch_stride, 19);
+    compute_encoder.set_bytes(batch_stride, 18);
   }
   if (has_sinks) {
     compute_encoder.set_input_array(*sinks, 16);
@@ -861,7 +861,7 @@ void TurboQuantize::eval_gpu(
   kname += std::to_string(vpw);
 
   auto kernel = d.get_kernel(kname);
-  auto& compute_encoder = d.get_command_encoder(s.index);
+  auto& compute_encoder = metal::get_command_encoder(s);
   compute_encoder.set_compute_pipeline_state(kernel);
 
   // Total vectors = product of all dims except last
@@ -882,7 +882,7 @@ void TurboQuantize::eval_gpu(
   MTL::Size grid_dims(total_vectors, 1, 1);
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 
-  d.add_temporaries(std::move(copies), s.index);
+  metal::get_command_encoder(s).add_temporaries(std::move(copies));
 }
 
 void TurboQuantSDPA::eval_gpu(
@@ -973,7 +973,7 @@ void TurboQuantSDPA::eval_gpu(
   hash_name += do_causal_ ? "_c" : "_nc";
 
   auto kernel = d.get_kernel(kname, hash_name, func_consts);
-  auto& compute_encoder = d.get_command_encoder(s.index);
+  auto& compute_encoder = metal::get_command_encoder(s);
   compute_encoder.set_compute_pipeline_state(kernel);
 
   compute_encoder.set_input_array(q, 0);
@@ -1033,7 +1033,7 @@ void TurboQuantSDPA::eval_gpu(
   MTL::Size grid_dims(q.shape(0) * q.shape(1), q.shape(2), 1);
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 
-  d.add_temporaries(std::move(copies), s.index);
+  metal::get_command_encoder(s).add_temporaries(std::move(copies));
 }
 
 } // namespace mlx::core::fast
