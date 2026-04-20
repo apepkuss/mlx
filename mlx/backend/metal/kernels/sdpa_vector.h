@@ -11,6 +11,9 @@ constant bool bool_mask [[function_constant(23)]];
 constant bool float_mask [[function_constant(24)]];
 constant bool has_sinks [[function_constant(25)]];
 constant int blocks [[function_constant(26)]];
+// Combined guard used for function_constant() on parameters that need
+// to be bound when either `has_sinks` or `has_mask` is true.
+constant bool has_sinks_or_mask = has_sinks || has_mask;
 
 template <typename T, int D, int V = D>
 [[kernel]] void sdpa_vector(
@@ -35,7 +38,9 @@ template <typename T, int D, int V = D>
     [[buffer(15), function_constant(has_mask)]],
     const device T* sinks [[buffer(16), function_constant(has_sinks)]],
     const constant int& num_q_heads
-    [[buffer(17), function_constant(has_sinks)]],
+    [[buffer(17), function_constant(has_sinks_or_mask)]],
+    const constant int& mask_batch_stride
+    [[buffer(18), function_constant(has_mask)]],
     uint3 tid [[threadgroup_position_in_grid]],
     uint3 tpg [[threadgroups_per_grid]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
@@ -69,13 +74,25 @@ template <typename T, int D, int V = D>
       simd_lid * qk_per_thread;
   values += kv_head_idx * v_head_stride + simd_gid * v_seq_stride +
       simd_lid * v_per_thread;
-  if (bool_mask) {
-    bmask += q_batch_head_idx * mask_head_stride +
-        simd_gid * mask_kv_seq_stride + q_seq_idx * mask_q_seq_stride;
-  }
-  if (float_mask) {
-    fmask += q_batch_head_idx * mask_head_stride +
-        simd_gid * mask_kv_seq_stride + q_seq_idx * mask_q_seq_stride;
+  // Mask offset uses separate batch and head strides so broadcast
+  // layouts (e.g. `[B, 1, 1, kv]` where the head axis is degenerate)
+  // land on the right per-batch slot. When the adapter passes
+  // `mask_batch_stride = strides(0)` (or 0 if B==1) and
+  // `mask_head_stride = strides(1)` (or 0 if head dim == 1), the sum
+  // `batch_idx * batch_stride + head_idx * head_stride` correctly
+  // broadcasts across whichever axis is degenerate.
+  if (bool_mask || float_mask) {
+    const int batch_idx = q_batch_head_idx / num_q_heads;
+    const int head_idx = q_batch_head_idx % num_q_heads;
+    const int mask_offset = batch_idx * mask_batch_stride +
+        head_idx * mask_head_stride + simd_gid * mask_kv_seq_stride +
+        q_seq_idx * mask_q_seq_stride;
+    if (bool_mask) {
+      bmask += mask_offset;
+    }
+    if (float_mask) {
+      fmask += mask_offset;
+    }
   }
 
   out += o_offset * V + simd_gid * v_per_thread;
@@ -199,6 +216,8 @@ template <typename T, int D, int V = D>
     const constant int& mask_head_stride
     [[buffer(17), function_constant(has_mask)]],
     const device T* sinks [[buffer(18), function_constant(has_sinks)]],
+    const constant int& mask_batch_stride
+    [[buffer(19), function_constant(has_mask)]],
     uint3 tptg [[threads_per_threadgroup]],
     uint3 tidtg [[thread_position_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]],
@@ -236,13 +255,20 @@ template <typename T, int D, int V = D>
   values += kv_batch_head_idx * v_head_stride + block_idx * v_seq_stride +
       simd_lid * v_per_thread;
   out += o_offset * blocks * V + block_idx * V + simd_lid * v_per_thread;
-  if (bool_mask) {
-    bmask += q_batch_head_idx * mask_head_stride +
+  // Split batch/head on the mask so broadcast layouts (head dim
+  // degenerate) address the right per-batch slot instead of stepping
+  // by `batch_stride` for every head. See the 1-pass kernel above
+  // for the full rationale.
+  if (bool_mask || float_mask) {
+    const int mask_offset = batch_idx * mask_batch_stride +
+        q_head_idx * mask_head_stride +
         block_idx * mask_kv_seq_stride + q_seq_idx * mask_q_seq_stride;
-  }
-  if (float_mask) {
-    fmask += q_batch_head_idx * mask_head_stride +
-        block_idx * mask_kv_seq_stride + q_seq_idx * mask_q_seq_stride;
+    if (bool_mask) {
+      bmask += mask_offset;
+    }
+    if (float_mask) {
+      fmask += mask_offset;
+    }
   }
   sums += o_offset * blocks + block_idx;
   maxs += o_offset * blocks + block_idx;
