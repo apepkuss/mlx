@@ -966,9 +966,9 @@ std::vector<array> turbo_quantize(
         "[turbo_quantize] bits must be 3 or 4, got " + std::to_string(bits));
   }
   int D = input.shape(-1);
-  if (D != 64 && D != 128) {
+  if (D != 64 && D != 128 && D != 256) {
     throw std::invalid_argument(
-        "[turbo_quantize] head_dim must be 64 or 128, got " +
+        "[turbo_quantize] head_dim must be 64, 128, or 256, got " +
         std::to_string(D));
   }
 

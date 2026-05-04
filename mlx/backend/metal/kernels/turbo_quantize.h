@@ -18,7 +18,7 @@ using namespace metal;
 ///
 ///  Template parameters:
 ///    T      — input element type (float16_t / bfloat16_t)
-///    D      — head dimension (must be power of 2, e.g. 64, 128)
+///    D      — head dimension (must be power of 2, e.g. 64, 128, 256)
 ///    BITS   — quantization bits (3 or 4)
 ///    N_LVLS — number of codebook levels = 2^BITS (8 or 16)
 ///    VPW    — values packed per uint32 word (10 for 3-bit, 8 for 4-bit)
@@ -36,8 +36,9 @@ template <typename T, int D, int BITS, int N_LVLS, int VPW>
 
   constexpr int PACKED_DIM = (D + VPW - 1) / VPW;
   // 1/sqrt(D) — precompute at compile time via reciprocal sqrt table
-  // D is always a power of 2 (64 or 128)
-  constexpr float WHT_SCALE = (D == 128) ? 0.08838834764831845f  // 1/sqrt(128)
+  // D is always a power of 2 (64, 128, or 256)
+  constexpr float WHT_SCALE = (D == 256) ? 0.0625f               // 1/sqrt(256)
+                             : (D == 128) ? 0.08838834764831845f // 1/sqrt(128)
                              : (D == 64)  ? 0.125f               // 1/sqrt(64)
                                           : 0.0f;
 

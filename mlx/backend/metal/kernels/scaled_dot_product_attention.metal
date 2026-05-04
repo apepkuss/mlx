@@ -65,7 +65,11 @@ instantiate_sdpa_vector_heads(float16_t)
   instantiate_sdpa_vector_turbo(type, 128, 4, 8, 0, 8)               \
   instantiate_sdpa_vector_turbo(type, 128, 4, 8, 4, 8)               \
   instantiate_sdpa_vector_turbo(type, 64, 3, 10, 0, 8)               \
-  instantiate_sdpa_vector_turbo(type, 64, 3, 10, 4, 8)
+  instantiate_sdpa_vector_turbo(type, 64, 3, 10, 4, 8)               \
+  instantiate_sdpa_vector_turbo(type, 256, 3, 10, 0, 8)              \
+  instantiate_sdpa_vector_turbo(type, 256, 3, 10, 4, 8)              \
+  instantiate_sdpa_vector_turbo(type, 256, 4, 8, 0, 8)               \
+  instantiate_sdpa_vector_turbo(type, 256, 4, 8, 4, 8)
 
 instantiate_sdpa_vector_turbo_heads(float16_t)
 instantiate_sdpa_vector_turbo_heads(bfloat16_t)
@@ -88,7 +92,9 @@ instantiate_sdpa_vector_turbo_heads(bfloat16_t)
   instantiate_turbo_quantize(type, 128, 3, 8, 10)                 \
   instantiate_turbo_quantize(type, 128, 4, 16, 8)                 \
   instantiate_turbo_quantize(type, 64, 3, 8, 10)                  \
-  instantiate_turbo_quantize(type, 64, 4, 16, 8)
+  instantiate_turbo_quantize(type, 64, 4, 16, 8)                  \
+  instantiate_turbo_quantize(type, 256, 3, 8, 10)                 \
+  instantiate_turbo_quantize(type, 256, 4, 16, 8)
 
 instantiate_turbo_quantize_heads(float16_t)
 instantiate_turbo_quantize_heads(bfloat16_t)
