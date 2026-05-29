@@ -44,7 +44,7 @@ struct InTracing {
   }
 
  private:
-  static int grad_counter;
+  static thread_local int grad_counter;
   static std::vector<std::pair<char, char>>& trace_stack();
 };
 

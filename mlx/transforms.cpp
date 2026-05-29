@@ -65,10 +65,10 @@ class Synchronizer : public Primitive {
 // function which returns true if we are forced to retain the graph during
 // evaluation.
 std::vector<std::pair<char, char>>& detail::InTracing::trace_stack() {
-  static std::vector<std::pair<char, char>> trace_stack_;
+  static thread_local std::vector<std::pair<char, char>> trace_stack_;
   return trace_stack_;
 }
-int detail::InTracing::grad_counter{0};
+thread_local int detail::InTracing::grad_counter{0};
 int detail::RetainGraph::tracing_counter{0};
 
 array eval_impl(std::vector<array> outputs, bool async) {
