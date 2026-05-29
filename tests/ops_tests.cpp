@@ -3,6 +3,7 @@
 // Required for using M_PI_2 in MSVC.
 #define _USE_MATH_DEFINES
 #include <cmath>
+#include <cstdlib>
 #include <numeric>
 
 #include "doctest/doctest.h"
@@ -3310,6 +3311,221 @@ TEST_CASE("test quantize dequantize") {
     auto max_diff = max(abs(x - x_hat)).item<float>();
     CHECK(max_diff <= 127.0 / (1 << i));
   }
+}
+
+TEST_CASE("test qmm qwen36 product shape") {
+  if (!metal::is_available()) {
+    INFO("Skipping qmm Qwen3.6 product-shape gpu test");
+    return;
+  }
+
+  constexpr int group_size = 64;
+  constexpr int bits = 4;
+  constexpr int M = 331;
+  constexpr int N = 8192;
+  constexpr int K = 2048;
+
+  auto [k1, k2] = random::split(random::key(20260529));
+  auto x = random::normal({1, M, K}, bfloat16, k1);
+  auto w = random::normal({N, K}, bfloat16, k2);
+
+  auto q = quantize(w, group_size, bits);
+  auto w_hat = dequantize(
+      q[0], q[1], q[2], group_size, bits, "affine", std::nullopt, float32);
+  auto y_q = quantized_matmul(x, q[0], q[1], q[2], true, group_size, bits);
+  auto y_ref = matmul(astype(x, float32), transpose(w_hat));
+
+  CHECK_EQ(y_q.shape(), Shape{1, M, N});
+  CHECK_EQ(y_ref.shape(), Shape{1, M, N});
+  auto max_diff = max(abs(astype(y_q, float32) - y_ref)).item<float>();
+  CHECK_LT(max_diff, 1.0f);
+}
+
+TEST_CASE("test qmm qwen36 real layer0 qkv") {
+  if (!metal::is_available()) {
+    INFO("Skipping qmm Qwen3.6 real layer0 qkv gpu test");
+    return;
+  }
+
+  auto input_path = std::getenv("MLX_QWEN36_QMM_INPUT");
+  auto weight_path = std::getenv("MLX_QWEN36_QMM_WEIGHTS");
+  if (input_path == nullptr || weight_path == nullptr) {
+    INFO("Set MLX_QWEN36_QMM_INPUT and MLX_QWEN36_QMM_WEIGHTS to run");
+    return;
+  }
+
+  constexpr int group_size = 64;
+  constexpr int bits = 4;
+  const std::string prefix =
+      "language_model.model.layers.0.linear_attn.in_proj_qkv.";
+
+  auto [input_tensors, input_metadata] = load_safetensors(input_path);
+  REQUIRE_EQ(input_tensors.size(), 1);
+  auto x = input_tensors.begin()->second;
+
+  auto [weights, weight_metadata] = load_safetensors(weight_path);
+  REQUIRE(weights.count(prefix + "weight"));
+  REQUIRE(weights.count(prefix + "scales"));
+  REQUIRE(weights.count(prefix + "biases"));
+  auto w = weights.at(prefix + "weight");
+  auto scales = weights.at(prefix + "scales");
+  auto biases = weights.at(prefix + "biases");
+
+  CHECK_EQ(x.shape(), Shape{1, 331, 2048});
+  CHECK_EQ(w.shape(), Shape{8192, 256});
+  CHECK_EQ(scales.shape(), Shape{8192, 32});
+  CHECK_EQ(biases.shape(), Shape{8192, 32});
+
+  auto w_f32 = dequantize(
+      w, scales, biases, group_size, bits, "affine", std::nullopt, float32);
+  auto y_q = quantized_matmul(x, w, scales, biases, true, group_size, bits);
+  auto y_ref = matmul(astype(x, float32), transpose(w_f32));
+  CHECK_EQ(y_q.shape(), Shape{1, 331, 8192});
+  CHECK_EQ(y_ref.shape(), Shape{1, 331, 8192});
+  CHECK_LT(max(abs(astype(y_q, float32) - y_ref)).item<float>(), 5e-1f);
+
+  auto w_bf16 = dequantize(
+      w, scales, biases, group_size, bits, "affine", std::nullopt, bfloat16);
+  auto y_m = matmul(x, transpose(w_bf16));
+  CHECK_EQ(y_m.shape(), Shape{1, 331, 8192});
+  CHECK_LT(max(abs(astype(y_m, float32) - y_ref)).item<float>(), 5e-1f);
+}
+
+TEST_CASE("test gather qmm rhs nax sorted moe shape") {
+  if (!metal::is_available()) {
+    INFO("Skipping gather qmm RHS NAX sorted MoE gpu test");
+    return;
+  }
+
+  constexpr int experts = 4;
+  constexpr int rows_per_expert = 8;
+  constexpr int rows = experts * rows_per_expert;
+  constexpr int in_dim = 128;
+  constexpr int out_dim = 64;
+  constexpr int group_size = 64;
+  constexpr int bits = 4;
+
+  auto [k1, k2] = random::split(random::key(20260603));
+  auto x = random::normal({rows, 1, in_dim}, bfloat16, k1);
+  auto w_dense = random::normal({experts, out_dim, in_dim}, bfloat16, k2);
+  auto q = quantize(w_dense, group_size, bits);
+
+  std::vector<uint32_t> idx;
+  idx.reserve(rows);
+  for (uint32_t e = 0; e < experts; ++e) {
+    for (int i = 0; i < rows_per_expert; ++i) {
+      idx.push_back(e);
+    }
+  }
+  auto rhs_indices = array(idx.data(), {rows}, uint32);
+
+  auto y_gather = gather_qmm(
+      x,
+      q[0],
+      q[1],
+      q[2],
+      std::nullopt,
+      rhs_indices,
+      true,
+      group_size,
+      bits,
+      "affine",
+      true);
+
+  auto w_ref = dequantize(
+      q[0], q[1], q[2], group_size, bits, "affine", std::nullopt, float32);
+  std::vector<array> refs;
+  refs.reserve(rows);
+  for (int row = 0; row < rows; ++row) {
+    const int expert = row / rows_per_expert;
+    auto x_row =
+        reshape(slice(x, {row, 0, 0}, {row + 1, 1, in_dim}), {1, in_dim});
+    auto w_expert = reshape(
+        slice(w_ref, {expert, 0, 0}, {expert + 1, out_dim, in_dim}),
+        {out_dim, in_dim});
+    refs.push_back(reshape(
+        matmul(astype(x_row, float32), transpose(w_expert)), {1, 1, out_dim}));
+  }
+  auto y_ref = concatenate(refs, 0);
+
+  CHECK_EQ(y_gather.shape(), Shape{rows, 1, out_dim});
+  CHECK_EQ(y_ref.shape(), Shape{rows, 1, out_dim});
+  CHECK_LT(max(abs(astype(y_gather, float32) - y_ref)).item<float>(), 5e-1f);
+}
+
+TEST_CASE("test matmul nax bf16 dynamic range") {
+  if (!metal::is_available()) {
+    INFO("Skipping matmul NAX bf16 dynamic-range gpu test");
+    return;
+  }
+
+  auto [k1, k2] = random::split(random::key(20260531));
+  auto max_matmul_ref_diff =
+      [](const array& x, const array& w, bool transpose_w) {
+        auto rhs = transpose_w ? transpose(w) : w;
+        auto rhs_ref =
+            transpose_w ? transpose(astype(w, float32)) : astype(w, float32);
+        auto y_m = matmul(x, rhs);
+        auto y_ref = matmul(astype(x, float32), rhs_ref);
+        return max(abs(astype(y_m, float32) - y_ref)).item<float>();
+      };
+
+  auto x_bf16 = random::normal({32, 128}, bfloat16, k1);
+  auto w_bf16 = random::normal({128, 128}, bfloat16, k2);
+  auto x_f16 = astype(x_bf16, float16);
+  auto w_f16 = astype(w_bf16, float16);
+  auto x_ones = ones({32, 128}, bfloat16);
+  auto w_ones = ones({128, 128}, bfloat16);
+
+  auto bf16_nt_diff = max_matmul_ref_diff(x_bf16, w_bf16, true);
+  auto bf16_nn_diff = max_matmul_ref_diff(x_bf16, w_bf16, false);
+  auto f16_nt_diff = max_matmul_ref_diff(x_f16, w_f16, true);
+  auto f16_nn_diff = max_matmul_ref_diff(x_f16, w_f16, false);
+  auto ones_diff = max_matmul_ref_diff(x_ones, w_ones, false);
+  auto random_ones_diff = max_matmul_ref_diff(x_bf16, w_ones, false);
+  auto ones_random_diff = max_matmul_ref_diff(x_ones, w_bf16, false);
+
+  CHECK_LT(bf16_nt_diff, 5e-1f);
+  CHECK_LT(bf16_nn_diff, 5e-1f);
+  CHECK_LT(f16_nt_diff, 5e-1f);
+  CHECK_LT(f16_nn_diff, 5e-1f);
+  CHECK_LT(ones_diff, 5e-1f);
+  CHECK_LT(random_ones_diff, 5e-1f);
+  CHECK_LT(ones_random_diff, 5e-1f);
+}
+
+TEST_CASE("test matmul nax vision patch embed shape") {
+  if (!metal::is_available()) {
+    INFO("Skipping matmul NAX vision patch-embed shape gpu test");
+    return;
+  }
+
+  auto [k1, k2] = random::split(random::key(20260601));
+  auto x = random::normal({1200, 1536}, float32, k1);
+  auto w = random::normal({1152, 1536}, bfloat16, k2);
+  auto y_m = matmul(x, transpose(w));
+  auto y_ref = matmul(x, transpose(astype(w, float32)));
+
+  CHECK_EQ(y_m.shape(), Shape{1200, 1152});
+  CHECK_EQ(y_ref.shape(), Shape{1200, 1152});
+  CHECK_LT(max(abs(astype(y_m, float32) - y_ref)).item<float>(), 1e-1f);
+}
+
+TEST_CASE("test matmul nax vision mlp splitk shape") {
+  if (!metal::is_available()) {
+    INFO("Skipping matmul NAX vision MLP split-K gpu test");
+    return;
+  }
+
+  auto [k1, k2] = random::split(random::key(20260602));
+  auto x = random::normal({1200, 4304}, float32, k1);
+  auto w = random::normal({1152, 4304}, bfloat16, k2);
+  auto y_m = matmul(x, transpose(w));
+  auto y_ref = matmul(x, transpose(astype(w, float32)));
+
+  CHECK_EQ(y_m.shape(), Shape{1200, 1152});
+  CHECK_EQ(y_ref.shape(), Shape{1200, 1152});
+  CHECK_LT(max(abs(astype(y_m, float32) - y_ref)).item<float>(), 5e-1f);
 }
 
 TEST_CASE("test repeat") {
