@@ -3505,7 +3505,9 @@ std::vector<array> QuantizedMatmul::vjp(
   for (auto arg : argnums) {
     // gradient wrt to x
     if (arg == 0) {
-      vjps.push_back(quantized_matmul(
+      auto qmm =
+          batch_isolated_ ? quantized_matmul_batch_isolated : quantized_matmul;
+      vjps.push_back(qmm(
           cotangents[0],
           primals[1],
           primals[2],
@@ -3569,23 +3571,26 @@ std::vector<array> QuantizedMatmul::jvp(
     throw std::runtime_error(
         "[QuantizedMatmul::jvp] No JVP wrt the quantized matrix yet.");
   }
-  return {quantized_matmul(
-      tangents[0],
-      primals[1],
-      primals[2],
-      mode_ == QuantizationMode::Affine ? std::optional<array>(primals[3])
-                                        : std::nullopt,
-      transpose_,
-      group_size_,
-      bits_,
-      quantization_mode_to_string(mode_),
-      stream())};
+  auto qmm =
+      batch_isolated_ ? quantized_matmul_batch_isolated : quantized_matmul;
+  return {
+      qmm(tangents[0],
+          primals[1],
+          primals[2],
+          mode_ == QuantizationMode::Affine ? std::optional<array>(primals[3])
+                                            : std::nullopt,
+          transpose_,
+          group_size_,
+          bits_,
+          quantization_mode_to_string(mode_),
+          stream())};
 }
 
 bool QuantizedMatmul::is_equivalent(const Primitive& other) const {
   const QuantizedMatmul& qm_other = static_cast<const QuantizedMatmul&>(other);
   return group_size_ == qm_other.group_size_ && bits_ == qm_other.bits_ &&
-      mode_ == qm_other.mode_ && transpose_ == qm_other.transpose_;
+      mode_ == qm_other.mode_ && transpose_ == qm_other.transpose_ &&
+      batch_isolated_ == qm_other.batch_isolated_;
 }
 
 std::vector<Shape> QuantizedMatmul::output_shapes(

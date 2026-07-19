@@ -1556,6 +1556,25 @@ MLX_API array quantized_matmul(
     const std::string& mode = "affine",
     StreamOrDevice s = {});
 
+/**
+ * Quantized matmul that evaluates each leading batch matrix independently.
+ *
+ * Unlike quantized_matmul(), this operation preserves the penultimate matrix
+ * dimension when x has leading batch dimensions and w is a shared 2D matrix.
+ * This guarantees the same kernel shape for each batch element as a sequence
+ * of single-batch calls.
+ */
+MLX_API array quantized_matmul_batch_isolated(
+    array x,
+    array w,
+    array scales,
+    std::optional<array> biases = std::nullopt,
+    bool transpose = true,
+    std::optional<int> group_size = std::nullopt,
+    std::optional<int> bits = std::nullopt,
+    const std::string& mode = "affine",
+    StreamOrDevice s = {});
+
 /** Quantize a matrix along its last axis */
 MLX_API std::vector<array> quantize(
     const array& w,
