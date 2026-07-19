@@ -821,7 +821,10 @@ MTL::Library* Device::get_library(
 void Device::clear_library(const std::string& name) {
   std::unique_lock wlock(library_mtx_);
   if (auto it = library_map_.find(name); it != library_map_.end()) {
-    library_kernels_.erase(it->second.get());
+    {
+      std::unique_lock kernel_lock(kernel_mtx_);
+      library_kernels_.erase(it->second.get());
+    }
     library_map_.erase(it);
   }
 }
@@ -883,9 +886,12 @@ MTL::ComputePipelineState* Device::get_kernel(
     std::shared_lock lock(kernel_mtx_);
 
     // Look for cached kernel
-    auto& kernel_map_ = library_kernels_[mtl_lib];
-    if (auto it = kernel_map_.find(kname); it != kernel_map_.end()) {
-      return it->second.get();
+    if (auto lib_it = library_kernels_.find(mtl_lib);
+        lib_it != library_kernels_.end()) {
+      if (auto kernel_it = lib_it->second.find(kname);
+          kernel_it != lib_it->second.end()) {
+        return kernel_it->second.get();
+      }
     }
   }
   return get_kernel_(base_name, mtl_lib, kname, func_consts, linked_functions);
