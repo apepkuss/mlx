@@ -4637,6 +4637,7 @@ array quantized_matmul_impl(
     std::optional<int> bits_,
     const std::string& mode,
     bool batch_isolated,
+    bool product_stable,
     StreamOrDevice s) {
   auto [dtype, qmode] = validate_mode_with_type(
       "quantized_matmul", scales, biases, std::nullopt, mode);
@@ -4676,7 +4677,13 @@ array quantized_matmul_impl(
       std::move(out_shape),
       dtype,
       std::make_shared<QuantizedMatmul>(
-          to_stream(s), group_size, bits, qmode, transpose, batch_isolated),
+          to_stream(s),
+          group_size,
+          bits,
+          qmode,
+          transpose,
+          batch_isolated,
+          product_stable),
       std::move(inputs));
 }
 
@@ -4702,6 +4709,7 @@ array quantized_matmul(
       bits,
       mode,
       false,
+      false,
       s);
 }
 
@@ -4724,6 +4732,31 @@ array quantized_matmul_batch_isolated(
       group_size,
       bits,
       mode,
+      true,
+      false,
+      s);
+}
+
+array quantized_matmul_product_stable(
+    array x,
+    array w,
+    array scales,
+    std::optional<array> biases /* = std::nullopt */,
+    bool transpose /* = true */,
+    std::optional<int> group_size /* = std::nullopt */,
+    std::optional<int> bits /* = std::nullopt */,
+    const std::string& mode /* = "affine" */,
+    StreamOrDevice s /* = {} */) {
+  return quantized_matmul_impl(
+      std::move(x),
+      std::move(w),
+      std::move(scales),
+      std::move(biases),
+      transpose,
+      group_size,
+      bits,
+      mode,
+      false,
       true,
       s);
 }

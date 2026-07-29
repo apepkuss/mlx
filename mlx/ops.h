@@ -1575,6 +1575,24 @@ MLX_API array quantized_matmul_batch_isolated(
     const std::string& mode = "affine",
     StreamOrDevice s = {});
 
+/**
+ * Quantized matmul with output independent of flattened product shape.
+ *
+ * Eligible small affine batches share a kernel launch and weight reads while
+ * preserving the accumulation tree used by a sequence of single-row calls.
+ * Other shapes fall back to the canonical vector kernel.
+ */
+MLX_API array quantized_matmul_product_stable(
+    array x,
+    array w,
+    array scales,
+    std::optional<array> biases = std::nullopt,
+    bool transpose = true,
+    std::optional<int> group_size = std::nullopt,
+    std::optional<int> bits = std::nullopt,
+    const std::string& mode = "affine",
+    StreamOrDevice s = {});
+
 /** Quantize a matrix along its last axis */
 MLX_API std::vector<array> quantize(
     const array& w,

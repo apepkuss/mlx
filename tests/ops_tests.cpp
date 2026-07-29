@@ -3495,6 +3495,38 @@ TEST_CASE("test batch-isolated qmm matches rowwise gemma4 shapes") {
   }
 }
 
+TEST_CASE("test product-stable qmm matches rowwise small batches") {
+  if (!metal::is_available()) {
+    INFO("Skipping product-stable QMM gpu test");
+    return;
+  }
+
+  constexpr int group_size = 64;
+  constexpr int bits = 4;
+  constexpr int in_dim = 512;
+  constexpr int out_dim = 1024;
+  auto w = random::normal({out_dim, in_dim}, bfloat16, random::key(20260729));
+  auto q = quantize(w, group_size, bits);
+
+  for (int batch : {2, 4, 8}) {
+    auto x = random::normal(
+        {batch, 1, in_dim}, bfloat16, random::key(20260729 + batch));
+    auto y_stable = quantized_matmul_product_stable(
+        x, q[0], q[1], q[2], true, group_size, bits);
+    std::vector<array> row_outputs;
+    row_outputs.reserve(batch);
+    for (int row = 0; row < batch; ++row) {
+      auto x_row = slice(x, {row, 0, 0}, {row + 1, 1, in_dim});
+      row_outputs.push_back(
+          quantized_matmul(x_row, q[0], q[1], q[2], true, group_size, bits));
+    }
+    auto y_rowwise = concatenate(row_outputs, 0);
+
+    eval({y_stable, y_rowwise});
+    CHECK(array_equal(y_stable, y_rowwise).item<bool>());
+  }
+}
+
 TEST_CASE("test matmul nax bf16 dynamic range") {
   if (!metal::is_available()) {
     INFO("Skipping matmul NAX bf16 dynamic-range gpu test");
