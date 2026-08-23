@@ -995,11 +995,6 @@ METAL_FUNC void qmm_t_nax_tgp_impl(
 
   constexpr short SM = BM / WM;
   constexpr short SN = BN / WN;
-  constexpr short SK = 32;
-
-  constexpr short TM = SM / 16;
-  constexpr short TN = SN / 16;
-  constexpr short TK = SK / 16;
 
   const short tm = SM * (simd_gid / WN);
   const short tn = SN * (simd_gid % WN);
@@ -1007,73 +1002,92 @@ METAL_FUNC void qmm_t_nax_tgp_impl(
   constexpr bool transpose_a = false;
   constexpr bool transpose_b = true;
 
-  const short sgp_sm = min(int(SM), M - (y_row + tm));
-  const bool is_unaligned_sm = (sgp_sm != SM);
+  const short sgp_sm = short(max(0, min(int(SM), M - (y_row + tm))));
 
-  const short sgp_sn = aligned_N ? SN : min(int(SN), N - (y_col + tn));
+  const short sgp_sn =
+      aligned_N ? SN : short(max(0, min(int(SN), N - (y_col + tn))));
+  const bool active = sgp_sm > 0 && sgp_sn > 0;
 
   const short tgp_bn = aligned_N ? BN : min(BN, int(N - (y_col)));
   const bool is_unaligned_bn = aligned_N ? false : (tgp_bn != BN);
 
   using AccumType = float;
 
-  NAXTile<AccumType, TM, TN> Dtile;
-  Dtile.clear();
-
   x += tm * K;
 
-  dispatch_bool(!is_unaligned_sm, [&](auto kAlignedM) {
-    dispatch_bool(aligned_N || !is_unaligned_bn, [&](auto kAlignedN) {
-      for (int k = 0; k < K; k += BK) {
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if constexpr (kAlignedN.value) {
-          loader_w.load_unsafe();
-        } else {
-          loader_w.load_safe(short2(BK, tgp_bn));
-        }
+  constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+      SM,
+      SN,
+      static_cast<int>(dynamic_extent),
+      transpose_a,
+      transpose_b,
+      true,
+      mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+  mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
 
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+  array<int, 2> a_strides = {1, K};
+  array<int, 2> b_strides = {1, BK_padded};
 
-        STEEL_PRAGMA_NO_UNROLL
-        for (int kk1 = 0; kk1 < BK; kk1 += SK) {
-          NAXTile<T, TM, TK> Atile;
-          NAXTile<T, TN, TK> Btile;
+  tensor<device T, dextents<int, 2>, tensor_inline> Atensor(
+      const_cast<device T*>(x),
+      dextents<int, 2>{BK, max(1, int(sgp_sm))},
+      a_strides);
+  tensor<threadgroup T, dextents<int, 2>, tensor_inline> Btensor(
+      Ws + tn * BK_padded,
+      dextents<int, 2>{BK, max(1, int(sgp_sn))},
+      b_strides);
 
-          volatile int compiler_barrier;
+  auto Dtensor = gemm_op.template get_destination_cooperative_tensor<
+      decltype(Atensor),
+      decltype(Btensor),
+      AccumType>();
 
-          if constexpr (kAlignedM.value) {
-            Atile.load(x + kk1, K);
-          } else {
-            Atile.load_safe(x + kk1, K, short2(SK, sgp_sm));
-          }
+  STEEL_PRAGMA_UNROLL
+  for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+    if (Dtensor.is_valid_element(i)) {
+      Dtensor[i] = 0;
+    }
+  }
 
-          Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
-
-          tile_matmad_nax(
-              Dtile,
-              Atile,
-              metal::bool_constant<transpose_a>{},
-              Btile,
-              metal::bool_constant<transpose_b>{});
-
-          (void)compiler_barrier;
-        }
-
-        x += BK;
-        loader_w.next();
+  dispatch_bool(aligned_N || !is_unaligned_bn, [&](auto kAlignedN) {
+    for (int k = 0; k < K; k += BK) {
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if constexpr (kAlignedN.value) {
+        loader_w.load_unsafe();
+      } else {
+        loader_w.load_safe(short2(BK, tgp_bn));
       }
 
-      // Store results to device memory
       threadgroup_barrier(mem_flags::mem_threadgroup);
 
-      if constexpr (kAlignedM.value && kAlignedN.value) {
-        Dtile.store(y + tm * N + tn, N);
-      } else if (kAlignedM.value && sgp_sn == SN) {
-        Dtile.store(y + tm * N + tn, N);
-      } else {
-        Dtile.store_safe(y + tm * N + tn, N, short2(sgp_sn, sgp_sm));
+      if (active) {
+        Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
+            const_cast<device T*>(x),
+            dextents<int, 2>{BK, int(sgp_sm)},
+            a_strides);
+        Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
+            Ws + tn * BK_padded, dextents<int, 2>{BK, int(sgp_sn)}, b_strides);
+        gemm_op.run(Atensor, Btensor, Dtensor);
       }
-    });
+
+      x += BK;
+      loader_w.next();
+    }
+
+    // Store results to device memory
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    STEEL_PRAGMA_UNROLL
+    for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+      if (Dtensor.is_valid_element(i)) {
+        auto coord = Dtensor.get_multidimensional_index(i);
+        const int col = coord[0];
+        const int row = coord[1];
+        if (row < int(sgp_sm) && col < int(sgp_sn)) {
+          y[tm * N + tn + row * N + col] = static_cast<T>(Dtensor[i]);
+        }
+      }
+    }
   });
 }
 
@@ -1101,7 +1115,6 @@ METAL_FUNC void qmm_n_nax_tgp_impl(
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   (void)lid;
-
   static_assert(BK >= SIMD_SIZE, "BK should be larger than SIMD_SIZE");
   static_assert(BK % SIMD_SIZE == 0, "BK should be divisible by SIMD_SIZE");
 
@@ -1138,16 +1151,9 @@ METAL_FUNC void qmm_n_nax_tgp_impl(
 
   constexpr short SM = BM / WM;
   constexpr short SN = BN / WN;
-  constexpr short SK = 32;
-
-  constexpr short TM = SM / 16;
-  constexpr short TN = SN / 16;
-  constexpr short TK = SK / 16;
 
   const short tm = SM * (simd_gid / WN);
   const short tn = SN * (simd_gid % WN);
-
-  const short sgp_sm = min(int(SM), M - (y_row + tm));
 
   const short ldb_tgp = BN_padded;
 
@@ -1156,39 +1162,56 @@ METAL_FUNC void qmm_n_nax_tgp_impl(
 
   using AccumType = float;
 
-  NAXTile<AccumType, TM, TN> Dtile;
-  Dtile.clear();
-
   x += tm * K;
+
+  const short sgp_sm = short(max(0, min(int(SM), M - (y_row + tm))));
+  const bool active = sgp_sm > 0;
+
+  constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+      SM,
+      SN,
+      static_cast<int>(dynamic_extent),
+      transpose_a,
+      transpose_b,
+      true,
+      mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+  mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
+
+  array<int, 2> a_strides = {1, K};
+  array<int, 2> b_strides = {1, int(ldb_tgp)};
+
+  tensor<device T, dextents<int, 2>, tensor_inline> Atensor(
+      const_cast<device T*>(x),
+      dextents<int, 2>{BK, max(1, int(sgp_sm))},
+      a_strides);
+  tensor<threadgroup T, dextents<int, 2>, tensor_inline> Btensor(
+      Ws + tn, dextents<int, 2>{SN, BK}, b_strides);
+
+  auto Dtensor = gemm_op.template get_destination_cooperative_tensor<
+      decltype(Atensor),
+      decltype(Btensor),
+      AccumType>();
+
+  STEEL_PRAGMA_UNROLL
+  for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+    if (Dtensor.is_valid_element(i)) {
+      Dtensor[i] = 0;
+    }
+  }
 
   for (int k = 0; k < K; k += BK) {
     threadgroup_barrier(mem_flags::mem_threadgroup);
     loader_w.load_unsafe();
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    STEEL_PRAGMA_NO_UNROLL
-    for (int kk1 = 0; kk1 < BK; kk1 += SK) {
-      NAXTile<T, TM, TK> Atile;
-      NAXTile<T, TK, TN> Btile;
-
-      volatile int compiler_barrier;
-
-      if (sgp_sm == SM) {
-        Atile.load(x + kk1, K);
-      } else {
-        Atile.load_safe(x + kk1, K, short2(SK, sgp_sm));
-      }
-
-      Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * ldb_tgp);
-
-      tile_matmad_nax(
-          Dtile,
-          Atile,
-          metal::bool_constant<transpose_a>{},
-          Btile,
-          metal::bool_constant<transpose_b>{});
-
-      (void)compiler_barrier;
+    if (active) {
+      Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
+          const_cast<device T*>(x),
+          dextents<int, 2>{BK, int(sgp_sm)},
+          a_strides);
+      Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
+          Ws + tn, dextents<int, 2>{SN, BK}, b_strides);
+      gemm_op.run(Atensor, Btensor, Dtensor);
     }
 
     x += BK;
@@ -1198,10 +1221,16 @@ METAL_FUNC void qmm_n_nax_tgp_impl(
   // Store results to device memory
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  if (sgp_sm == SM) {
-    Dtile.store(y + tm * N + tn, N);
-  } else {
-    Dtile.store_safe(y + tm * N + tn, N, short2(SN, sgp_sm));
+  STEEL_PRAGMA_UNROLL
+  for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+    if (Dtensor.is_valid_element(i)) {
+      auto coord = Dtensor.get_multidimensional_index(i);
+      const int col = coord[0];
+      const int row = coord[1];
+      if (row < int(sgp_sm) && col < SN) {
+        y[tm * N + tn + row * N + col] = static_cast<T>(Dtensor[i]);
+      }
+    }
   }
 }
 
@@ -1516,8 +1545,8 @@ template <
   const size_t y_col_long = size_t(y_col);
 
   // Prepare threadgroup bounds
-  const short tgp_bm = align_M ? BM : short(min(BM, M - y_row));
-  const short tgp_bn = align_N ? BN : short(min(BN, N - y_col));
+  const short tgp_bm = align_M ? BM : short(max(0, min(BM, M - y_row)));
+  const short tgp_bn = align_N ? BN : short(max(0, min(BN, N - y_col)));
 
   // Calculate the final tiles in the case that K is not aligned
   const int k_remain = K - K_it * BK;
@@ -1534,11 +1563,6 @@ template <
 
   constexpr short SM = BM / WM;
   constexpr short SN = BN / WN;
-  constexpr short SK = 32;
-
-  constexpr short TM = SM / 16;
-  constexpr short TN = SN / 16;
-  constexpr short TK = SK / 16;
 
   const short tm = SM * (simd_group_id / WN);
   const short tn = SN * (simd_group_id % WN);
@@ -1548,13 +1572,23 @@ template <
   const short sgp_sn =
       align_N ? SN : min(SN, short(max(0, (N - (y_col + tn)))));
 
-  const bool is_unaligned_sm = align_M ? false : (sgp_sm != SM);
   const bool is_unaligned_bn = align_N ? false : (tgp_bn != BN);
 
-  constexpr short BR = transpose ? TN : TK;
-  constexpr short BC = transpose ? TK : TN;
-
   using AccumType = float;
+
+  constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+      SM,
+      SN,
+      static_cast<int>(dynamic_extent),
+      false,
+      transpose,
+      true,
+      mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate);
+
+  mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
+
+  array<int, 2> a_strides = {1, K};
+  array<int, 2> b_strides = {1, transpose ? BK_padded : BN_padded};
 
   // Do as many matmuls as necessary
   uint32_t index;
@@ -1576,10 +1610,32 @@ template <
     }
     threadgroup_barrier(mem_flags::mem_none);
 
-    NAXTile<AccumType, TM, TN> Dtile;
-    Dtile.clear();
+    const bool active = sgp_sm > 0 && sgp_sn > 0;
+    const device T* xn_base = x + tm * K;
+    const threadgroup T* b_base = transpose ? Ws + tn * BK_padded : Ws + tn;
 
-    const device T* xn = x + tm * K;
+    tensor<device T, dextents<int, 2>, tensor_inline> Atensor(
+        const_cast<device T*>(xn_base),
+        dextents<int, 2>{max(1, min(BK, K)), max(1, int(sgp_sm))},
+        a_strides);
+    tensor<threadgroup T, dextents<int, 2>, tensor_inline> Btensor(
+        const_cast<threadgroup T*>(b_base),
+        dextents<int, 2>{
+            transpose ? max(1, min(BK, K)) : max(1, int(sgp_sn)),
+            transpose ? max(1, int(sgp_sn)) : max(1, min(BK, K))},
+        b_strides);
+
+    auto Dtensor = gemm_op.template get_destination_cooperative_tensor<
+        decltype(Atensor),
+        decltype(Btensor),
+        AccumType>();
+
+    STEEL_PRAGMA_UNROLL
+    for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+      if (Dtensor.is_valid_element(i)) {
+        Dtensor[i] = 0;
+      }
+    }
 
     // Prepare threadgroup loading operations
     thread loader_w_t loader_w(
@@ -1591,105 +1647,71 @@ template <
         simd_group_id,
         simd_lane_id);
 
-    dispatch_bool(align_M || !is_unaligned_sm, [&](auto kAlignedM) {
-      dispatch_bool(align_N || !is_unaligned_bn, [&](auto kAlignedN) {
-        for (int k = 0; k < K_it; k++) {
-          threadgroup_barrier(mem_flags::mem_threadgroup);
-          if constexpr (kAlignedN.value) {
-            loader_w.load_unsafe();
-          } else {
-            loader_w.load_safe(
-                transpose ? short2(BK, tgp_bn) : short2(tgp_bn, BK));
-          }
-
-          threadgroup_barrier(mem_flags::mem_threadgroup);
-
-          STEEL_PRAGMA_NO_UNROLL
-          for (int kk1 = 0; kk1 < BK; kk1 += SK) {
-            NAXTile<T, TM, TK> Atile;
-            NAXTile<T, BR, BC> Btile;
-
-            volatile int compiler_barrier;
-
-            if constexpr (kAlignedM.value) {
-              Atile.load(xn + kk1, K);
-            } else {
-              Atile.load_safe(xn + kk1, K, short2(SK, sgp_sm));
-            }
-
-            if constexpr (transpose) {
-              Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
-            } else {
-              Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
-            }
-
-            tile_matmad_nax(
-                Dtile,
-                Atile,
-                metal::bool_constant<false>{},
-                Btile,
-                metal::bool_constant<transpose>{});
-
-            (void)compiler_barrier;
-          }
-
-          xn += BK;
-          loader_w.next();
-        }
-
-        if (!align_K) {
-          threadgroup_barrier(mem_flags::mem_threadgroup);
-          loader_w.load_safe(tile_w);
-          threadgroup_barrier(mem_flags::mem_threadgroup);
-
-          STEEL_PRAGMA_NO_UNROLL
-          for (int kk1 = 0; kk1 < BK; kk1 += SK) {
-            NAXTile<T, TM, TK> Atile;
-            NAXTile<T, BR, BC> Btile;
-
-            volatile int compiler_barrier;
-
-            const short psk = min(int(SK), max(0, (BK - kk1)));
-            Atile.load_safe(xn + kk1, K, short2(psk, sgp_sm));
-
-            if constexpr (transpose) {
-              Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
-            } else {
-              Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
-            }
-
-            tile_matmad_nax(
-                Dtile,
-                Atile,
-                metal::bool_constant<false>{},
-                Btile,
-                metal::bool_constant<transpose>{});
-
-            (void)compiler_barrier;
-          }
+    dispatch_bool(align_N || !is_unaligned_bn, [&](auto kAlignedN) {
+      for (int k = 0; k < K_it; k++) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if constexpr (kAlignedN.value) {
+          loader_w.load_unsafe();
+        } else {
+          loader_w.load_safe(
+              transpose ? short2(BK, tgp_bn) : short2(tgp_bn, BK));
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        const short m_lo_lim = min(int(sgp_sm), max(0, offset - tm));
-        const short m_hi_lim = min(int(sgp_sm), max(0, offset_next - tm));
-
-        // Store results to device memory
-        if constexpr (kAlignedN.value) {
-          if (m_lo_lim == 0 && m_hi_lim == SM) {
-            Dtile.store(y + tm * N + tn, N);
-          } else {
-            Dtile.store_slice(
-                y + tm * N + tn, N, short2(0, m_lo_lim), short2(SN, m_hi_lim));
-          }
-        } else {
-          Dtile.store_slice(
-              y + tm * N + tn,
-              N,
-              short2(0, m_lo_lim),
-              short2(sgp_sn, m_hi_lim));
+        if (active) {
+          Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
+              const_cast<device T*>(xn_base + k * BK),
+              dextents<int, 2>{BK, int(sgp_sm)},
+              a_strides);
+          Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
+              const_cast<threadgroup T*>(b_base),
+              dextents<int, 2>{
+                  transpose ? BK : int(sgp_sn), transpose ? int(sgp_sn) : BK},
+              b_strides);
+          gemm_op.run(Atensor, Btensor, Dtensor);
         }
-      });
+
+        loader_w.next();
+      }
+
+      if (!align_K && k_remain > 0) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        loader_w.load_safe(tile_w);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (active) {
+          Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
+              const_cast<device T*>(xn_base + K_it * BK),
+              dextents<int, 2>{k_remain, int(sgp_sm)},
+              a_strides);
+          Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
+              const_cast<threadgroup T*>(b_base),
+              dextents<int, 2>{
+                  transpose ? k_remain : int(sgp_sn),
+                  transpose ? int(sgp_sn) : k_remain},
+              b_strides);
+          gemm_op.run(Atensor, Btensor, Dtensor);
+        }
+      }
+
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+      const short m_lo_lim = min(int(sgp_sm), max(0, offset - tm));
+      const short m_hi_lim = min(int(sgp_sm), max(0, offset_next - tm));
+
+      STEEL_PRAGMA_UNROLL
+      for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+        if (Dtensor.is_valid_element(i)) {
+          auto coord = Dtensor.get_multidimensional_index(i);
+          const int col = coord[0];
+          const int row = coord[1];
+          if (row >= int(m_lo_lim) && row < int(m_hi_lim) &&
+              row < int(sgp_sm) && col < int(sgp_sn)) {
+            y[tm * N + tn + row * N + col] = static_cast<T>(Dtensor[i]);
+          }
+        }
+      }
     });
   }
 }
