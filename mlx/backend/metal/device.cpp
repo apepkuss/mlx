@@ -821,7 +821,10 @@ MTL::Library* Device::get_library(
 void Device::clear_library(const std::string& name) {
   std::unique_lock wlock(library_mtx_);
   if (auto it = library_map_.find(name); it != library_map_.end()) {
-    library_kernels_.erase(it->second.get());
+    {
+      std::unique_lock kernel_lock(kernel_mtx_);
+      library_kernels_.erase(it->second.get());
+    }
     library_map_.erase(it);
   }
 }
