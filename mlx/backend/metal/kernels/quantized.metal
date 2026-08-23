@@ -130,6 +130,17 @@
   instantiate_quantized_wide_wrap(affine_qmv_wide, type, group_size, bits, 4, 8) \
   instantiate_quantized_wide_wrap(affine_qmv_wide, type, group_size, bits, 5, 8)
 
+#define instantiate_quantized_fast_wide(type, group_size) \
+  instantiate_quantized_wide_wrap(affine_qmv_fast_wide, type, group_size, 4, 2, 32) \
+  instantiate_quantized_wide_wrap(affine_qmv_fast_wide, type, group_size, 4, 3, 32) \
+  instantiate_quantized_wide_wrap(affine_qmv_fast_wide, type, group_size, 4, 4, 32) \
+  instantiate_quantized_wide_wrap(affine_qmv_fast_wide, type, group_size, 4, 5, 32)
+
+#define instantiate_quantized_fast_wide_types(group_size) \
+  instantiate_quantized_fast_wide(float, group_size)      \
+  instantiate_quantized_fast_wide(float16_t, group_size)  \
+  instantiate_quantized_fast_wide(bfloat16_t, group_size)
+
 #define instantiate_quantized_all_splitk(type, group_size, bits)   \
   instantiate_quantized_split_k(affine_qvm_split_k, type, group_size, bits, 8)   \
   instantiate_quantized_split_k(affine_qvm_split_k, type, group_size, bits, 32)  \
@@ -180,3 +191,6 @@
   instantiate_quantized_groups(8)
 
 instantiate_quantized_all() // clang-format on
+    instantiate_quantized_fast_wide_types(128)
+        instantiate_quantized_fast_wide_types(64)
+            instantiate_quantized_fast_wide_types(32)

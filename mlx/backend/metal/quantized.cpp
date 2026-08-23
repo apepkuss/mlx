@@ -554,22 +554,26 @@ void qmv_wide(
     int K,
     metal::Device& d,
     const Stream& s,
-    const std::string& mode) {
+    const std::string& mode,
+    bool canonical_fast) {
   // vecs_per_tg is the per-threadgroup input-vector tile. Each tile re-reads
   // the weights, so use the fewest tiles, then the smallest tile that fills
   // them.
   int n_tiles = (M + 4) / 5; // ceil(M / 5); tile size caps at 5
   int vecs_per_tg = (M + n_tiles - 1) / n_tiles;
 
+  // Preserve qmv_fast's accumulation tree for aligned affine projections so
+  // small-batch output is independent of the product shape.
   // k_lanes: lanes reducing K per output row (32/k_lanes rows per simdgroup).
-  // The affine subchunk decode has enough ALU per weight load to favor more
-  // rows per simdgroup (kl8); the fp modes' vectorized dot is balanced at 16.
-  int k_lanes = mode == "affine" ? 8 : 16;
+  // The canonical path matches qmv_fast with one output row per simdgroup.
+  int k_lanes = canonical_fast ? 32 : mode == "affine" ? 8 : 16;
   constexpr int num_simdgroups = 2;
   int B = out.size() / M / N;
   bool batched = B > 1;
-  // Output rows per threadgroup: (32 / k_lanes) per simdgroup x num_simdgroups.
-  int rows_per_tg = (32 / k_lanes) * num_simdgroups;
+  // qmv_fast produces four output rows per simdgroup. The generic wide path
+  // produces 32 / k_lanes rows per simdgroup.
+  int rows_per_tg =
+      canonical_fast ? 4 * num_simdgroups : (32 / k_lanes) * num_simdgroups;
 
   MTL::Size group_dims(32, num_simdgroups, 1);
   MTL::Size grid_dims(
@@ -582,7 +586,7 @@ void qmv_wide(
   std::string type_string = get_type_string(x.dtype());
   concatenate(
       kname,
-      mode + "_qmv_wide_",
+      mode + (canonical_fast ? "_qmv_fast_wide_" : "_qmv_wide_"),
       type_string,
       "_gs_",
       group_size,
@@ -596,7 +600,7 @@ void qmv_wide(
   auto kernel = get_quantized_kernel_wrapped(
       d,
       kname,
-      "qmv_wide",
+      canonical_fast ? "qmv_fast_wide" : "qmv_wide",
       mode,
       type_string,
       group_size,
@@ -1749,7 +1753,8 @@ void dispatch_qmv(
     int K,
     metal::Device& d,
     const Stream& s,
-    const std::string& mode) {
+    const std::string& mode,
+    bool product_stable) {
   // It is a qmv with a small inner dimension so route to qmv_quad kernel
   if ((K == 128 || K == 64) && is_power_of_2(bits) && !global_scale) {
     qmv_quad(x, w, scales, biases, out, group_size, bits, M, N, K, d, s, mode);
@@ -1758,8 +1763,25 @@ void dispatch_qmv(
 
   // Small batch so route to qmv_wide, which reuses each weight group across the
   // M vectors.
-  if (M >= 2 && use_qmv_wide(mode, d) && !global_scale) {
-    qmv_wide(x, w, scales, biases, out, group_size, bits, M, N, K, d, s, mode);
+  bool canonical_fast = !global_scale && product_stable && mode == "affine" &&
+      bits == 4 && N % 8 == 0 && K % 512 == 0;
+  if (M >= 2 && !global_scale &&
+      (canonical_fast || (!product_stable && use_qmv_wide(mode, d)))) {
+    qmv_wide(
+        x,
+        w,
+        scales,
+        biases,
+        out,
+        group_size,
+        bits,
+        M,
+        N,
+        K,
+        d,
+        s,
+        mode,
+        canonical_fast);
     return;
   }
   qmv(x,
@@ -1804,7 +1826,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   int vector_limit = transpose_ ? get_qmv_batch_limit(K, N, d) : 4;
   auto mode = quantization_mode_to_string(mode_);
   // It is a matrix matrix product.
-  if (M >= vector_limit) {
+  if (M >= vector_limit && !product_stable_) {
     // Use split-K qmm for small M with transposed weights (non-batched only)
     int B = out.size() / M / N;
     if (transpose_ && B == 1) {
@@ -1845,7 +1867,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
         K,
         d,
         s,
-        mode);
+        mode,
+        product_stable_);
     return;
   }
 
@@ -2040,7 +2063,8 @@ void QQMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
       K,
       d,
       s,
-      mode);
+      mode,
+      false);
 }
 
 void GatherQQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
