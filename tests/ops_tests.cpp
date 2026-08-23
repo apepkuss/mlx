@@ -3535,6 +3535,48 @@ TEST_CASE("test gather qmm rhs nax sorted moe shape") {
   CHECK_LT(max(abs(astype(y_gather, float32) - y_ref)).item<float>(), 5e-1f);
 }
 
+TEST_CASE("test batch-isolated qmm matches rowwise gemma4 shapes") {
+  if (!metal::is_available()) {
+    INFO("Skipping batch-isolated QMM Gemma4-shape gpu test");
+    return;
+  }
+
+  constexpr int batch = 4;
+  constexpr int rows = 3;
+  constexpr int group_size = 64;
+  constexpr int bits = 4;
+  const std::vector<std::pair<int, int>> shapes = {
+      {2560, 3072}, // fused Q/K/V
+      {2048, 2560}, // O
+  };
+
+  int shape_index = 0;
+  for (auto [in_dim, out_dim] : shapes) {
+    auto x = random::normal(
+        {batch, rows, in_dim}, bfloat16, random::key(20260719 + shape_index));
+    auto w = random::normal(
+        {out_dim, in_dim}, bfloat16, random::key(20260721 + shape_index));
+    shape_index++;
+    auto q = quantize(w, group_size, bits);
+
+    auto y_batch = quantized_matmul_batch_isolated(
+        x, q[0], q[1], q[2], true, group_size, bits);
+    std::vector<array> row_outputs;
+    row_outputs.reserve(batch);
+    for (int row = 0; row < batch; ++row) {
+      auto x_row = slice(x, {row, 0, 0}, {row + 1, rows, in_dim});
+      row_outputs.push_back(
+          quantized_matmul(x_row, q[0], q[1], q[2], true, group_size, bits));
+    }
+    auto y_rowwise = concatenate(row_outputs, 0);
+
+    eval({y_batch, y_rowwise});
+    CHECK_EQ(y_batch.shape(), Shape{batch, rows, out_dim});
+    CHECK_EQ(y_batch.dtype(), y_rowwise.dtype());
+    CHECK(array_equal(y_batch, y_rowwise).item<bool>());
+  }
+}
+
 TEST_CASE("test matmul nax bf16 dynamic range") {
   if (!metal::is_available()) {
     INFO("Skipping matmul NAX bf16 dynamic-range gpu test");

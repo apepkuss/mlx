@@ -4797,16 +4797,19 @@ void validate_global_scale(
   }
 }
 
-array quantized_matmul(
+namespace {
+
+array quantized_matmul_impl(
     const array& x,
     const array& w,
     const array& scales,
-    const std::optional<array>& biases /* = std::nullopt */,
-    bool transpose /* = true */,
-    std::optional<int> group_size_ /* = std::nullopt */,
-    std::optional<int> bits_ /* = std::nullopt */,
-    const std::string& mode /* = "affine" */,
-    StreamOrDevice s /* = {} */) {
+    const std::optional<array>& biases,
+    bool transpose,
+    std::optional<int> group_size_,
+    std::optional<int> bits_,
+    const std::string& mode,
+    bool batch_isolated,
+    StreamOrDevice s) {
   auto [dtype, qmode] = validate_mode_with_type(
       "quantized_matmul", scales, biases, std::nullopt, mode);
 
@@ -4845,8 +4848,56 @@ array quantized_matmul(
       std::move(out_shape),
       dtype,
       std::make_shared<QuantizedMatmul>(
-          to_stream(s), group_size, bits, qmode, transpose),
+          to_stream(s), group_size, bits, qmode, transpose, batch_isolated),
       std::move(inputs));
+}
+
+} // namespace
+
+array quantized_matmul(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const std::optional<array>& biases /* = std::nullopt */,
+    bool transpose /* = true */,
+    std::optional<int> group_size /* = std::nullopt */,
+    std::optional<int> bits /* = std::nullopt */,
+    const std::string& mode /* = "affine" */,
+    StreamOrDevice s /* = {} */) {
+  return quantized_matmul_impl(
+      x,
+      w,
+      scales,
+      biases,
+      transpose,
+      group_size,
+      bits,
+      mode,
+      false,
+      s);
+}
+
+array quantized_matmul_batch_isolated(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const std::optional<array>& biases /* = std::nullopt */,
+    bool transpose /* = true */,
+    std::optional<int> group_size /* = std::nullopt */,
+    std::optional<int> bits /* = std::nullopt */,
+    const std::string& mode /* = "affine" */,
+    StreamOrDevice s /* = {} */) {
+  return quantized_matmul_impl(
+      x,
+      w,
+      scales,
+      biases,
+      transpose,
+      group_size,
+      bits,
+      mode,
+      true,
+      s);
 }
 
 void validate_qqmm_inputs(

@@ -1795,7 +1795,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   // Extract the matmul shapes
-  bool non_batched = w.ndim() == 2 && x.flags().row_contiguous;
+  bool non_batched = w.ndim() == 2 && x.flags().row_contiguous &&
+      !(batch_isolated_ && x.ndim() > 2);
   int K = x.shape(-1);
   int M = non_batched ? x.size() / K : x.shape(-2);
   int N = out.shape(-1);
