@@ -4872,17 +4872,7 @@ array quantized_matmul(
     const std::string& mode /* = "affine" */,
     StreamOrDevice s /* = {} */) {
   return quantized_matmul_impl(
-      x,
-      w,
-      scales,
-      biases,
-      transpose,
-      group_size,
-      bits,
-      mode,
-      false,
-      false,
-      s);
+      x, w, scales, biases, transpose, group_size, bits, mode, false, false, s);
 }
 
 array quantized_matmul_batch_isolated(
@@ -4896,17 +4886,7 @@ array quantized_matmul_batch_isolated(
     const std::string& mode /* = "affine" */,
     StreamOrDevice s /* = {} */) {
   return quantized_matmul_impl(
-      x,
-      w,
-      scales,
-      biases,
-      transpose,
-      group_size,
-      bits,
-      mode,
-      true,
-      false,
-      s);
+      x, w, scales, biases, transpose, group_size, bits, mode, true, false, s);
 }
 
 array quantized_matmul_product_stable(
@@ -4920,17 +4900,7 @@ array quantized_matmul_product_stable(
     const std::string& mode /* = "affine" */,
     StreamOrDevice s /* = {} */) {
   return quantized_matmul_impl(
-      x,
-      w,
-      scales,
-      biases,
-      transpose,
-      group_size,
-      bits,
-      mode,
-      false,
-      true,
-      s);
+      x, w, scales, biases, transpose, group_size, bits, mode, false, true, s);
 }
 
 void validate_qqmm_inputs(
