@@ -74,72 +74,71 @@ template <
   // NAX tile configuration
   constexpr short SM = BM / WM;
   constexpr short SN = BN / WN;
-  constexpr short SK = 32;
-
-  constexpr short TM = SM / 16;
-  constexpr short TN = SN / 16;
 
   // Calculate simdgroup offsets and alignment
   const short tm = SM * (simd_group_id / WN);
   const short tn = SN * (simd_group_id % WN);
 
   const int sgp_sm_int =
-      align_M ? int(SM) : min(int(SM), params->M - (c_row + tm));
+      align_M ? int(SM) : max(0, min(int(SM), params->M - (c_row + tm)));
   const short sgp_sm = short(sgp_sm_int);
-  const bool is_unaligned_sm = align_M ? false : (sgp_sm != SM);
 
   const int sgp_sn_int =
-      align_N ? int(SN) : min(int(SN), params->N - (c_col + tn));
+      align_N ? int(SN) : max(0, min(int(SN), params->N - (c_col + tn)));
   const short sgp_sn = short(sgp_sn_int);
-  const bool is_unaligned_sn = align_N ? false : (sgp_sn != SN);
 
   A += transpose_a ? tm : (tm * params->lda);
   B += transpose_b ? (tn * params->ldb) : tn;
   C += tm * params->ldc + tn;
 
-  NAXTile<AccumType, TM, TN> Dtile;
-
-  // gemm_loop through the partition
-  // Check K-alignment at runtime (partition-specific)
   const int partition_k_size = k_end - k_start;
-  const int partition_k_iters = partition_k_size / BK;
-  const bool partition_k_aligned = (partition_k_size % BK) == 0;
 
-  dispatch_bool(partition_k_aligned, [&](auto kAlignedK) {
-    dispatch_bool(align_M || !is_unaligned_sm, [&](auto kAlignedM) {
-      dispatch_bool(align_N || !is_unaligned_sn, [&](auto kAlignedN) {
-        Dtile = gemm_loop<
-            T,
-            SM,
-            SN,
-            SK,
-            BK,
-            transpose_a,
-            transpose_b,
-            kAlignedM.value,
-            kAlignedN.value,
-            kAlignedK.value,
-            AccumType>(
-            A,
-            B,
-            params->lda,
-            params->ldb,
-            partition_k_size,
-            partition_k_iters,
-            sgp_sm,
-            sgp_sn);
-      });
-    });
-  });
+  constexpr auto desc = mpp::tensor_ops::matmul2d_descriptor(
+      SM,
+      SN,
+      static_cast<int>(dynamic_extent),
+      transpose_a,
+      transpose_b,
+      true,
+      mpp::tensor_ops::matmul2d_descriptor::mode::multiply);
 
-  // Store result
-  dispatch_bool(align_M || !is_unaligned_sm, [&](auto kAlignedM) {
-    dispatch_bool(align_N || !is_unaligned_sn, [&](auto kAlignedN) {
-      if constexpr (kAlignedM && kAlignedN) {
-        Dtile.store(C, int(params->ldc));
-      } else {
-        Dtile.store_safe(C, int(params->ldc), short2(sgp_sn, sgp_sm));
+  mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> gemm_op;
+
+  array<int, 2> a_strides = {1, int(params->lda)};
+  array<int, 2> b_strides = {1, int(params->ldb)};
+  const int a_extent_x = transpose_a ? max(1, int(sgp_sm)) : partition_k_size;
+  const int a_extent_y = transpose_a ? partition_k_size : max(1, int(sgp_sm));
+  const int b_extent_x = transpose_b ? partition_k_size : max(1, int(sgp_sn));
+  const int b_extent_y = transpose_b ? max(1, int(sgp_sn)) : partition_k_size;
+
+  tensor<device T, dextents<int, 2>, tensor_inline> Atensor(
+      const_cast<device T*>(A),
+      dextents<int, 2>{a_extent_x, a_extent_y},
+      a_strides);
+  tensor<device T, dextents<int, 2>, tensor_inline> Btensor(
+      const_cast<device T*>(B),
+      dextents<int, 2>{b_extent_x, b_extent_y},
+      b_strides);
+
+  auto Dtensor = gemm_op.template get_destination_cooperative_tensor<
+      decltype(Atensor),
+      decltype(Btensor),
+      AccumType>();
+
+  const bool active = sgp_sm > 0 && sgp_sn > 0 && partition_k_size > 0;
+  if (active) {
+    gemm_op.run(Atensor, Btensor, Dtensor);
+  }
+
+  STEEL_PRAGMA_UNROLL
+  for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+    if (Dtensor.is_valid_element(i)) {
+      auto coord = Dtensor.get_multidimensional_index(i);
+      const int col = coord[0];
+      const int row = coord[1];
+      if (row < int(sgp_sm) && col < int(sgp_sn)) {
+        C[row * params->ldc + col] = Dtensor[i];
       }
-    });
-  });
+    }
+  }
 }
