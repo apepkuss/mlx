@@ -854,7 +854,6 @@ METAL_FUNC void qmv_fast_wide_impl(
     uint simd_lid [[thread_index_in_simdgroup]]) {
   static_assert(bits == 4, "qmv_fast_wide is specialized for affine4");
   constexpr int packs_per_thread = bits == 2 ? 1 : 2;
-  constexpr int num_simdgroups = 2;
   constexpr int results_per_simdgroup = 4;
   constexpr int pack_factor = get_pack_factor<bits, 32>();
   constexpr int bytes_per_pack = get_bytes_per_pack<bits, 32>();
@@ -867,28 +866,17 @@ METAL_FUNC void qmv_fast_wide_impl(
   typedef float U;
 
   thread U x_thread[values_per_thread];
-  thread U result[vecs_per_tg][results_per_simdgroup];
-  for (int v = 0; v < vecs_per_tg; v++) {
-    for (int row = 0; row < results_per_simdgroup; row++) {
-      result[v][row] = 0;
-    }
-  }
+  thread U result[results_per_simdgroup] = {0};
 
   const int in_vec_size_w = in_vec_size * bytes_per_pack / pack_factor;
   const int in_vec_size_g = in_vec_size / group_size;
-  const int out_row = tid.y * (num_simdgroups * results_per_simdgroup) +
-      simd_gid * results_per_simdgroup;
-  const int vec0 = tid.x * vecs_per_tg;
+  const int out_row = tid.y * results_per_simdgroup;
+  const int vec = tid.x * vecs_per_tg + simd_gid;
 
   ws += out_row * in_vec_size_w + simd_lid * packs_per_thread * bytes_per_pack;
   scales += out_row * in_vec_size_g + simd_lid / scale_step_per_thread;
   biases += out_row * in_vec_size_g + simd_lid / scale_step_per_thread;
-
-  const device T* xv[vecs_per_tg];
-  for (int v = 0; v < vecs_per_tg; v++) {
-    xv[v] =
-        x + min(vec0 + v, M - 1) * in_vec_size + simd_lid * values_per_thread;
-  }
+  x += min(vec, M - 1) * in_vec_size + simd_lid * values_per_thread;
 
   for (int k = 0; k < in_vec_size; k += block_size) {
     thread uint16_t w_thread[results_per_simdgroup][values_per_thread / 4];
@@ -904,29 +892,22 @@ METAL_FUNC void qmv_fast_wide_impl(
       bias_thread[row] = biases[row * in_vec_size_g];
     }
 
-    for (int v = 0; v < vecs_per_tg; v++) {
-      U sum = load_vector<T, U, values_per_thread, bits>(xv[v], x_thread);
-
-      for (int row = 0; row < results_per_simdgroup; row++) {
-        result[v][row] += qdot_affine4<U, values_per_thread>(
-            w_thread[row], x_thread, scale_thread[row], bias_thread[row], sum);
-      }
-
-      xv[v] += block_size;
+    U sum = load_vector<T, U, values_per_thread, bits>(x, x_thread);
+    for (int row = 0; row < results_per_simdgroup; row++) {
+      result[row] += qdot_affine4<U, values_per_thread>(
+          w_thread[row], x_thread, scale_thread[row], bias_thread[row], sum);
     }
+    x += block_size;
 
     ws += block_size * bytes_per_pack / pack_factor;
     scales += block_size / group_size;
     biases += block_size / group_size;
   }
 
-  for (int v = 0; v < vecs_per_tg; v++) {
-    for (int row = 0; row < results_per_simdgroup; row++) {
-      result[v][row] = simd_sum(result[v][row]);
-      if (simd_lid == 0 && vec0 + v < M) {
-        y[(vec0 + v) * out_vec_size + out_row + row] =
-            static_cast<T>(result[v][row]);
-      }
+  for (int row = 0; row < results_per_simdgroup; row++) {
+    result[row] = simd_sum(result[row]);
+    if (simd_lid == 0 && vec < M && out_row + row < out_vec_size) {
+      y[vec * out_vec_size + out_row + row] = static_cast<T>(result[row]);
     }
   }
 }

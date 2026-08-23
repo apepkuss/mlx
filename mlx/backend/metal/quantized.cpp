@@ -567,13 +567,16 @@ void qmv_wide(
   // k_lanes: lanes reducing K per output row (32/k_lanes rows per simdgroup).
   // The canonical path matches qmv_fast with one output row per simdgroup.
   int k_lanes = canonical_fast ? 32 : mode == "affine" ? 8 : 16;
-  constexpr int num_simdgroups = 2;
   int B = out.size() / M / N;
   bool batched = B > 1;
-  // qmv_fast produces four output rows per simdgroup. The generic wide path
+  if (canonical_fast) {
+    vecs_per_tg = std::min(M, 2);
+  }
+  // qmv_fast_wide produces four output rows per simdgroup. The generic wide path
   // produces 32 / k_lanes rows per simdgroup.
+  int num_simdgroups = canonical_fast ? vecs_per_tg : 2;
   int rows_per_tg =
-      canonical_fast ? 4 * num_simdgroups : (32 / k_lanes) * num_simdgroups;
+      canonical_fast ? 4 : (32 / k_lanes) * num_simdgroups;
 
   MTL::Size group_dims(32, num_simdgroups, 1);
   MTL::Size grid_dims(
