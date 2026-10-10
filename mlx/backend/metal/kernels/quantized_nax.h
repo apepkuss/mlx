@@ -1685,104 +1685,103 @@ template <
   array<int, 2> a_strides = {1, K};
   array<int, 2> b_strides = {1, transpose ? BK_padded : BN_padded};
 
-    const bool active = sgp_sm > 0 && sgp_sn > 0;
-    const device T* xn_base = x + tm * K;
-    const threadgroup T* b_base = transpose ? Ws + tn * BK_padded : Ws + tn;
+  const bool active = sgp_sm > 0 && sgp_sn > 0;
+  const device T* xn_base = x + tm * K;
+  const threadgroup T* b_base = transpose ? Ws + tn * BK_padded : Ws + tn;
 
-    tensor<device T, dextents<int, 2>, tensor_inline> Atensor(
-        const_cast<device T*>(xn_base),
-        dextents<int, 2>{max(1, min(BK, K)), max(1, int(sgp_sm))},
-        a_strides);
-    tensor<threadgroup T, dextents<int, 2>, tensor_inline> Btensor(
-        const_cast<threadgroup T*>(b_base),
-        dextents<int, 2>{
-            transpose ? max(1, min(BK, K)) : max(1, int(sgp_sn)),
-            transpose ? max(1, int(sgp_sn)) : max(1, min(BK, K))},
-        b_strides);
+  tensor<device T, dextents<int, 2>, tensor_inline> Atensor(
+      const_cast<device T*>(xn_base),
+      dextents<int, 2>{max(1, min(BK, K)), max(1, int(sgp_sm))},
+      a_strides);
+  tensor<threadgroup T, dextents<int, 2>, tensor_inline> Btensor(
+      const_cast<threadgroup T*>(b_base),
+      dextents<int, 2>{
+          transpose ? max(1, min(BK, K)) : max(1, int(sgp_sn)),
+          transpose ? max(1, int(sgp_sn)) : max(1, min(BK, K))},
+      b_strides);
 
-    auto Dtensor = gemm_op.template get_destination_cooperative_tensor<
-        decltype(Atensor),
-        decltype(Btensor),
-        AccumType>();
+  auto Dtensor = gemm_op.template get_destination_cooperative_tensor<
+      decltype(Atensor),
+      decltype(Btensor),
+      AccumType>();
 
-    STEEL_PRAGMA_UNROLL
-    for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
-      if (Dtensor.is_valid_element(i)) {
-        Dtensor[i] = 0;
-      }
+  STEEL_PRAGMA_UNROLL
+  for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+    if (Dtensor.is_valid_element(i)) {
+      Dtensor[i] = 0;
     }
+  }
 
-    // Prepare threadgroup loading operations
-    thread loader_w_t loader_w(
-        wl + group * stride_w,
-        scales + group * stride_s,
-        biases + group * stride_s,
-        transpose ? K : N,
-        Ws,
-        simd_group_id,
-        simd_lane_id);
+  // Prepare threadgroup loading operations
+  thread loader_w_t loader_w(
+      wl + group * stride_w,
+      scales + group * stride_s,
+      biases + group * stride_s,
+      transpose ? K : N,
+      Ws,
+      simd_group_id,
+      simd_lane_id);
 
-    dispatch_bool(align_N || !is_unaligned_bn, [&](auto kAlignedN) {
-      for (int k = 0; k < K_it; k++) {
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if constexpr (kAlignedN.value) {
-          loader_w.load_unsafe();
-        } else {
-          loader_w.load_safe(
-              transpose ? short2(BK, tgp_bn) : short2(tgp_bn, BK));
-        }
-
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (active) {
-          Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
-              const_cast<device T*>(xn_base + k * BK),
-              dextents<int, 2>{BK, int(sgp_sm)},
-              a_strides);
-          Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
-              const_cast<threadgroup T*>(b_base),
-              dextents<int, 2>{
-                  transpose ? BK : int(sgp_sn), transpose ? int(sgp_sn) : BK},
-              b_strides);
-          gemm_op.run(Atensor, Btensor, Dtensor);
-        }
-
-        loader_w.next();
-      }
-
-      if (!align_K && k_remain > 0) {
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        loader_w.load_safe(tile_w);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-
-        if (active) {
-          Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
-              const_cast<device T*>(xn_base + K_it * BK),
-              dextents<int, 2>{k_remain, int(sgp_sm)},
-              a_strides);
-          Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
-              const_cast<threadgroup T*>(b_base),
-              dextents<int, 2>{
-                  transpose ? k_remain : int(sgp_sn),
-                  transpose ? int(sgp_sn) : k_remain},
-              b_strides);
-          gemm_op.run(Atensor, Btensor, Dtensor);
-        }
+  dispatch_bool(align_N || !is_unaligned_bn, [&](auto kAlignedN) {
+    for (int k = 0; k < K_it; k++) {
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if constexpr (kAlignedN.value) {
+        loader_w.load_unsafe();
+      } else {
+        loader_w.load_safe(
+            transpose ? short2(BK, tgp_bn) : short2(tgp_bn, BK));
       }
 
       threadgroup_barrier(mem_flags::mem_threadgroup);
 
+      if (active) {
+        Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
+            const_cast<device T*>(xn_base + k * BK),
+            dextents<int, 2>{BK, int(sgp_sm)},
+            a_strides);
+        Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
+            const_cast<threadgroup T*>(b_base),
+            dextents<int, 2>{
+                transpose ? BK : int(sgp_sn), transpose ? int(sgp_sn) : BK},
+            b_strides);
+        gemm_op.run(Atensor, Btensor, Dtensor);
+      }
 
-      STEEL_PRAGMA_UNROLL
-      for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
-        if (Dtensor.is_valid_element(i)) {
-          auto coord = Dtensor.get_multidimensional_index(i);
-          const int col = coord[0];
-          const int row = coord[1];
-          if (row < int(sgp_sm) && col < int(sgp_sn)) {
-            y[tm * N + tn + row * N + col] = static_cast<T>(Dtensor[i]);
-          }
+      loader_w.next();
+    }
+
+    if (!align_K && k_remain > 0) {
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      loader_w.load_safe(tile_w);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+      if (active) {
+        Atensor = tensor<device T, dextents<int, 2>, tensor_inline>(
+            const_cast<device T*>(xn_base + K_it * BK),
+            dextents<int, 2>{k_remain, int(sgp_sm)},
+            a_strides);
+        Btensor = tensor<threadgroup T, dextents<int, 2>, tensor_inline>(
+            const_cast<threadgroup T*>(b_base),
+            dextents<int, 2>{
+                transpose ? k_remain : int(sgp_sn),
+                transpose ? int(sgp_sn) : k_remain},
+            b_strides);
+        gemm_op.run(Atensor, Btensor, Dtensor);
+      }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    STEEL_PRAGMA_UNROLL
+    for (uint16_t i = 0; i < Dtensor.get_capacity(); ++i) {
+      if (Dtensor.is_valid_element(i)) {
+        auto coord = Dtensor.get_multidimensional_index(i);
+        const int col = coord[0];
+        const int row = coord[1];
+        if (row < int(sgp_sm) && col < int(sgp_sn)) {
+          y[tm * N + tn + row * N + col] = static_cast<T>(Dtensor[i]);
         }
       }
-    });
+    }
+  });
 }

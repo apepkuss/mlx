@@ -3708,6 +3708,7 @@ TEST_CASE("test gather qmm rhs nax sorted moe shape") {
       group_size,
       bits,
       "affine",
+      std::nullopt,
       true);
 
   auto w_ref = dequantize(
@@ -3729,6 +3730,81 @@ TEST_CASE("test gather qmm rhs nax sorted moe shape") {
   CHECK_EQ(y_gather.shape(), Shape{rows, 1, out_dim});
   CHECK_EQ(y_ref.shape(), Shape{rows, 1, out_dim});
   CHECK_LT(max(abs(astype(y_gather, float32) - y_ref)).item<float>(), 5e-1f);
+}
+
+TEST_CASE("test migrated nax gather preserves upstream edge cases") {
+  if (!metal::is_available()) {
+    return;
+  }
+
+  constexpr int experts = 4;
+  constexpr int out_dim = 64;
+  constexpr int group_size = 32;
+  constexpr int bits = 4;
+  const std::vector<std::vector<int>> expert_rows = {
+      {3, 0, 35, 9}, {8200, 8190, 8190, 8190}};
+  for (const auto& counts : expert_rows) {
+    const int rows = std::accumulate(counts.begin(), counts.end(), 0);
+    for (int in_dim : {128, 160}) {
+      for (bool transposed : {false, true}) {
+        CAPTURE(rows);
+        CAPTURE(in_dim);
+        CAPTURE(transposed);
+        auto x = random::normal(
+            {rows, 1, in_dim}, bfloat16, random::key(20261010));
+        auto w = random::normal(
+            transposed ? Shape{experts, out_dim, in_dim}
+                       : Shape{experts, in_dim, out_dim},
+            bfloat16,
+            random::key(20261011));
+        auto q = quantize(w, group_size, bits);
+        std::vector<uint32_t> indices;
+        for (int expert = 0; expert < experts; ++expert) {
+          indices.insert(indices.end(), counts[expert], uint32_t(expert));
+        }
+        auto y = gather_qmm(
+            x,
+            q[0],
+            q[1],
+            q[2],
+            std::nullopt,
+            array(indices.data(), {rows}, uint32),
+            transposed,
+            group_size,
+            bits,
+            "affine",
+            std::nullopt,
+            true);
+        auto dense = dequantize(
+            q[0], q[1], q[2], group_size, bits, "affine", std::nullopt, float32);
+        std::vector<array> refs;
+        int offset = 0;
+        for (int expert = 0; expert < experts; ++expert) {
+          const int count = counts[expert];
+          if (count == 0) {
+            continue;
+          }
+          auto xe = reshape(
+              slice(x, {offset, 0, 0}, {offset + count, 1, in_dim}),
+              {count, in_dim});
+          auto we = transposed
+              ? reshape(
+                    slice(dense, {expert, 0, 0}, {expert + 1, out_dim, in_dim}),
+                    {out_dim, in_dim})
+              : reshape(
+                    slice(dense, {expert, 0, 0}, {expert + 1, in_dim, out_dim}),
+                    {in_dim, out_dim});
+          refs.push_back(reshape(
+              matmul(astype(xe, float32), transposed ? transpose(we) : we),
+              {count, 1, out_dim}));
+          offset += count;
+        }
+        auto reference = concatenate(refs, 0);
+        CHECK_EQ(y.shape(), reference.shape());
+        CHECK_LT(max(abs(astype(y, float32) - reference)).item<float>(), 5e-1f);
+      }
+    }
+  }
 }
 
 TEST_CASE("test batch-isolated qmm matches rowwise gemma4 shapes") {
