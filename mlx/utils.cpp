@@ -7,6 +7,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <pthread.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "mlx/dtype_utils.h"
 #include "mlx/types/limits.h"
 #include "mlx/utils.h"
@@ -126,8 +133,14 @@ void set_printoptions(PrintOptions options) {
 }
 
 bool is_main_thread() {
+#if defined(__APPLE__)
+  return pthread_main_np() != 0;
+#elif defined(__linux__)
+  return syscall(SYS_gettid) == getpid();
+#else
   static auto main_thread_id = std::this_thread::get_id();
   return main_thread_id == std::this_thread::get_id();
+#endif
 }
 
 Dtype result_type(const std::vector<array>& arrays) {

@@ -105,9 +105,7 @@ TEST_CASE("test graph built in another thread evaluates on this thread") {
     return;
   }
   auto s = new_thread_unsafe_stream(default_device());
-  // Reach the scheduler from this thread first. The core treats the first
-  // thread that does so as the main thread, and clear_streams() on that
-  // thread also drops the thread unsafe streams.
+  // Materialize the shared stream before building graphs on another thread.
   eval(ones({1}, float32, s));
   std::vector<array> outs;
   std::thread t([&] {
