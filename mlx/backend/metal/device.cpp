@@ -117,11 +117,15 @@ NS::SharedPtr<MTL::Device> load_device() {
   return device;
 }
 
+const char* error_description(NS::Error* error) {
+  return error ? error->localizedDescription()->utf8String() : "unknown error";
+}
+
 std::pair<MTL::Library*, NS::Error*> load_library_from_path(
     MTL::Device* device,
     const char* path) {
   auto library = NS::String::string(path, NS::UTF8StringEncoding);
-  NS::Error* error;
+  NS::Error* error = nullptr;
   auto lib = device->newLibrary(library, &error);
 
   return std::make_pair(lib, error);
@@ -218,12 +222,13 @@ MTL::Library* load_default_library(MTL::Device* device) {
           fmt::format(
               "Can not load metallib from specified location \"{}\": {}.",
               get_metallib_path(),
-              error->localizedDescription()->utf8String()));
+              error_description(error)));
     }
     return lib;
   }
 
-  NS::Error* error[6];
+  // Not every lookup below runs in every configuration.
+  NS::Error* error[6] = {};
   MTL::Library* lib;
   // First try the colocated mlx.metallib
   std::tie(lib, error[0]) = load_colocated_library(device, "mlx");
@@ -291,7 +296,7 @@ MTL::Library* load_library(
     if (!lib) {
       std::ostringstream msg;
       msg << "Failed to load the metallib from <" << lib_path << "> with error "
-          << error->localizedDescription()->utf8String();
+          << error_description(error);
       throw std::runtime_error(msg.str());
     }
     return lib;
@@ -304,7 +309,7 @@ MTL::Library* load_library(
     if (!lib) {
       std::ostringstream msg;
       msg << "Failed to load the metallib from <" << full_path
-          << "> with error " << error->localizedDescription()->utf8String();
+          << "> with error " << error_description(error);
       throw std::runtime_error(msg.str());
     }
     return lib;
