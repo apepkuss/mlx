@@ -38,6 +38,26 @@ class ResidencySets {
 
   void resize(size_t size);
 
+  // Keep one tracked allocation resident whatever the wired limit is, until
+  // it is unpinned or erased. Pinned bytes are held outside the wired limit:
+  // they neither use its budget nor are dropped when it shrinks. Both return
+  // the bytes they changed, 0 for an allocation that is not tracked (for
+  // example one carved from the small-buffer heap) or already in that state.
+  size_t pin(const MTL::Allocation* buf);
+  size_t unpin(const MTL::Allocation* buf);
+
+  // Lock-free check, so the allocator's free path costs nothing while no
+  // allocation is pinned.
+  bool has_pinned() const {
+    return num_pinned_.load(std::memory_order_acquire) != 0;
+  }
+
+  // Total bytes pinned. Not part of wired_size().
+  size_t pinned_size() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return total_pinned_;
+  }
+
   bool enabled() const {
     return enabled_;
   }
@@ -90,6 +110,9 @@ class ResidencySets {
   struct Placement {
     uint32_t set_id;
     size_t bytes;
+    // In a set regardless of the wired limit, and not counted in
+    // total_wired_.
+    bool pinned{false};
   };
 
   // The following all require mtx_. add_set_locked reports whether the driver
@@ -108,6 +131,9 @@ class ResidencySets {
   size_t max_bytes_per_set_{0};
   size_t capacity_{0};
   size_t total_wired_{0};
+  // Bytes pinned and how many allocations hold them.
+  size_t total_pinned_{0};
+  std::atomic<size_t> num_pinned_{0};
 
   // Sets indexed by id. Append-only, so ids stay valid and dense.
   std::vector<Set> sets_;
