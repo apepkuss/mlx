@@ -40,6 +40,11 @@ class MetalAllocator : public allocator::Allocator {
   size_t set_memory_limit(size_t limit);
   size_t get_memory_limit();
   size_t set_wired_limit(size_t limit);
+  // Keep a live buffer resident whatever the wired limit is, until it is
+  // unpinned or freed. Return the bytes changed.
+  size_t pin_resident(Buffer buffer);
+  size_t unpin_resident(Buffer buffer);
+  size_t get_pinned_memory() const;
   void clear_cache();
 
  private:

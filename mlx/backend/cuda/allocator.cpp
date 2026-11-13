@@ -464,5 +464,14 @@ void clear_cache() {
 size_t set_wired_limit(size_t) {
   return 0;
 }
+size_t pin_resident(const std::vector<array>&) {
+  return 0;
+}
+size_t unpin_resident(const std::vector<array>&) {
+  return 0;
+}
+size_t get_pinned_memory() {
+  return 0;
+}
 
 } // namespace mlx::core

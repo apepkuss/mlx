@@ -294,3 +294,110 @@ TEST_CASE("test the wired limit is used up to its boundary") {
   allocator::allocator().free(second);
   CHECK_EQ(residency().wired_size(), baseline);
 }
+
+TEST_CASE("test a pinned buffer is resident outside the wired limit") {
+  if (!residency().enabled()) {
+    return;
+  }
+  LimitGuard guard(0, 0);
+  CHECK_EQ(residency().pinned_size(), 0);
+  CHECK_FALSE(residency().has_pinned());
+
+  auto a = allocator::allocator().malloc(4 * MB);
+  auto b = allocator::allocator().malloc(4 * MB);
+  auto mtl = [](allocator::Buffer buf) {
+    return static_cast<MTL::Buffer*>(buf.ptr());
+  };
+  // Nothing is wired at a limit of zero, yet the pinned one is resident.
+  CHECK_EQ(residency().pin(mtl(a)), 4 * MB);
+  CHECK_EQ(residency().pin(mtl(a)), 0); // already pinned
+  CHECK_EQ(residency().pinned_size(), 4 * MB);
+  CHECK_EQ(residency().wired_size(), 0);
+  CHECK(residency().has_pinned());
+  check_gpu_work();
+
+  // Raising and lowering the limit moves only what is not pinned.
+  set_wired_limit(256 * MB);
+  const size_t wired = residency().wired_size();
+  CHECK_GE(wired, 4 * MB); // b
+  CHECK_EQ(residency().pinned_size(), 4 * MB);
+  set_wired_limit(0);
+  CHECK_EQ(residency().wired_size(), 0);
+  CHECK_EQ(residency().pinned_size(), 4 * MB);
+
+  // Unpinned with no budget left, it is no longer resident.
+  CHECK_EQ(residency().unpin(mtl(a)), 4 * MB);
+  CHECK_EQ(residency().unpin(mtl(a)), 0);
+  CHECK_EQ(residency().pinned_size(), 0);
+  CHECK_EQ(residency().wired_size(), 0);
+
+  // Unpinned while the limit has room, it stays resident under the limit.
+  set_wired_limit(256 * MB);
+  const size_t before = residency().wired_size();
+  CHECK_EQ(residency().pin(mtl(b)), 4 * MB);
+  CHECK_EQ(residency().wired_size(), before - 4 * MB);
+  CHECK_EQ(residency().unpin(mtl(b)), 4 * MB);
+  CHECK_EQ(residency().wired_size(), before);
+
+  allocator::allocator().free(a);
+  allocator::allocator().free(b);
+}
+
+TEST_CASE("test freeing a pinned buffer ends the pin") {
+  if (!residency().enabled()) {
+    return;
+  }
+  auto mtl = [](allocator::Buffer buf) {
+    return static_cast<MTL::Buffer*>(buf.ptr());
+  };
+  {
+    // Released on free.
+    LimitGuard guard(0, 0);
+    auto a = allocator::allocator().malloc(4 * MB);
+    CHECK_EQ(residency().pin(mtl(a)), 4 * MB);
+    allocator::allocator().free(a);
+    CHECK_EQ(residency().pinned_size(), 0);
+    CHECK_FALSE(residency().has_pinned());
+    CHECK_EQ(residency().wired_size(), 0);
+  }
+  {
+    // Kept in the buffer cache on free: whatever reuses it is not pinned.
+    LimitGuard guard(0, 64 * MB);
+    auto a = allocator::allocator().malloc(4 * MB);
+    void* ptr = a.ptr();
+    CHECK_EQ(residency().pin(mtl(a)), 4 * MB);
+    allocator::allocator().free(a);
+    CHECK_EQ(residency().pinned_size(), 0);
+    auto b = allocator::allocator().malloc(4 * MB);
+    CHECK_EQ(b.ptr(), ptr); // the cached buffer
+    CHECK_EQ(residency().pinned_size(), 0);
+    CHECK_EQ(residency().wired_size(), 0);
+    allocator::allocator().free(b);
+    clear_cache();
+  }
+}
+
+TEST_CASE("test pin_resident pins the buffers of evaluated arrays") {
+  if (!residency().enabled()) {
+    return;
+  }
+  LimitGuard guard(0, 0);
+  {
+    auto x = ones({2 * 1024, 1024}, float32); // 8 MB
+    auto lazy = x + 1;
+    eval(x);
+    synchronize();
+    // An array that is not evaluated has no buffer to pin.
+    CHECK_EQ(pin_resident({lazy}), 0);
+    const size_t pinned = pin_resident({x, x});
+    CHECK_GE(pinned, 8 * MB);
+    CHECK_EQ(get_pinned_memory(), pinned);
+    CHECK_EQ(pin_resident({x}), 0);
+    CHECK_EQ(unpin_resident({x}), pinned);
+    CHECK_EQ(get_pinned_memory(), 0);
+    CHECK_EQ(pin_resident({x}), pinned);
+  }
+  // The array is gone, and its pin with it.
+  synchronize();
+  CHECK_EQ(get_pinned_memory(), 0);
+}

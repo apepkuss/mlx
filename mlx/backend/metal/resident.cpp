@@ -199,12 +199,66 @@ void ResidencySets::erase(MTL::Allocation* buf) {
     assert(false && "erasing an allocation that was never inserted");
     return;
   }
+  if (it->second.pinned) {
+    // Back under the wired accounting, which the removal below undoes.
+    it->second.pinned = false;
+    total_pinned_ -= it->second.bytes;
+    total_wired_ += it->second.bytes;
+    num_pinned_.fetch_sub(1, std::memory_order_release);
+  }
   if (it->second.set_id != kNoSet) {
     const uint32_t idx = it->second.set_id;
     remove_from_set_locked(buf, it->second);
     sets_[idx].set->commit();
   }
   buf_to_set_.erase(it);
+}
+
+size_t ResidencySets::pin(const MTL::Allocation* buf) {
+  if (!enabled_) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(mtx_);
+  auto it = buf_to_set_.find(buf);
+  if (it == buf_to_set_.end() || it->second.pinned) {
+    return 0;
+  }
+  auto& at = it->second;
+  if (at.set_id == kNoSet) {
+    auto pool = new_scoped_memory_pool();
+    uint32_t idx = add_to_set_locked(buf, at);
+    sets_[idx].set->commit();
+  }
+  // In a set either way; move its bytes out of the wired limit's accounting.
+  total_wired_ -= at.bytes;
+  total_pinned_ += at.bytes;
+  at.pinned = true;
+  num_pinned_.fetch_add(1, std::memory_order_release);
+  return at.bytes;
+}
+
+size_t ResidencySets::unpin(const MTL::Allocation* buf) {
+  if (!enabled_) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(mtx_);
+  auto it = buf_to_set_.find(buf);
+  if (it == buf_to_set_.end() || !it->second.pinned) {
+    return 0;
+  }
+  auto& at = it->second;
+  at.pinned = false;
+  total_pinned_ -= at.bytes;
+  total_wired_ += at.bytes;
+  num_pinned_.fetch_sub(1, std::memory_order_release);
+  // It stays resident only while the wired limit has room for it.
+  if (total_wired_ > capacity_) {
+    auto pool = new_scoped_memory_pool();
+    const uint32_t idx = at.set_id;
+    remove_from_set_locked(buf, at);
+    sets_[idx].set->commit();
+  }
+  return at.bytes;
 }
 
 void ResidencySets::resize(size_t size) {
@@ -239,7 +293,7 @@ void ResidencySets::resize(size_t size) {
       if (total_wired_ <= capacity_) {
         break;
       }
-      if (at.set_id == kNoSet) {
+      if (at.set_id == kNoSet || at.pinned) {
         continue;
       }
       touched[at.set_id] = true;

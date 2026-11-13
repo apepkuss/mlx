@@ -209,6 +209,15 @@ size_t set_cache_limit(size_t limit) {
 size_t set_wired_limit(size_t) {
   return 0;
 }
+size_t pin_resident(const std::vector<array>&) {
+  return 0;
+}
+size_t unpin_resident(const std::vector<array>&) {
+  return 0;
+}
+size_t get_pinned_memory() {
+  return 0;
+}
 void clear_cache() {
   allocator::common_allocator().clear_cache();
 }

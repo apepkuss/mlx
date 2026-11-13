@@ -104,6 +104,27 @@ size_t MetalAllocator::set_wired_limit(size_t limit) {
   return limit;
 };
 
+size_t MetalAllocator::pin_resident(Buffer buffer) {
+  auto buf = static_cast<MTL::Buffer*>(buffer.ptr());
+  // Buffers carved from the small-buffer heap are not tracked on their own.
+  if (buf == nullptr || buf->heap()) {
+    return 0;
+  }
+  return residency_sets_.pin(buf);
+}
+
+size_t MetalAllocator::unpin_resident(Buffer buffer) {
+  auto buf = static_cast<MTL::Buffer*>(buffer.ptr());
+  if (buf == nullptr || buf->heap()) {
+    return 0;
+  }
+  return residency_sets_.unpin(buf);
+}
+
+size_t MetalAllocator::get_pinned_memory() const {
+  return residency_sets_.pinned_size();
+}
+
 Buffer MetalAllocator::malloc(size_t size) {
   // Metal doesn't like empty buffers
   if (size == 0) {
@@ -196,6 +217,11 @@ void MetalAllocator::free(Buffer buffer) {
 
   std::unique_lock lk(mutex_);
   active_memory_ -= buf->length();
+  // A pin belongs to the array that was freed, not to whatever the cache
+  // hands this buffer to next.
+  if (residency_sets_.has_pinned() && !buf->heap()) {
+    residency_sets_.unpin(buf);
+  }
   if (get_cache_memory() < max_pool_size_) {
     buffer_cache_.recycle_to_cache(buf);
   } else {
@@ -268,6 +294,27 @@ size_t set_wired_limit(size_t limit) {
         "the maximum working set size is not allowed.");
   }
   return metal::allocator().set_wired_limit(limit);
+}
+size_t pin_resident(const std::vector<array>& arrays) {
+  size_t bytes = 0;
+  for (const auto& a : arrays) {
+    if (a.is_available()) {
+      bytes += metal::allocator().pin_resident(a.buffer());
+    }
+  }
+  return bytes;
+}
+size_t unpin_resident(const std::vector<array>& arrays) {
+  size_t bytes = 0;
+  for (const auto& a : arrays) {
+    if (a.is_available()) {
+      bytes += metal::allocator().unpin_resident(a.buffer());
+    }
+  }
+  return bytes;
+}
+size_t get_pinned_memory() {
+  return metal::allocator().get_pinned_memory();
 }
 size_t get_active_memory() {
   return metal::allocator().get_active_memory();

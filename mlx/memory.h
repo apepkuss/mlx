@@ -90,4 +90,24 @@ MLX_API void clear_cache();
  * */
 MLX_API size_t set_wired_limit(size_t limit);
 
+/* Keep the memory of evaluated arrays resident.
+ *
+ * Note, this function is only useful when using the Metal backend with
+ * macOS 15.0 or higher.
+ *
+ * A pinned buffer stays resident whatever the wired limit is and does not use
+ * its budget. The pin ends when the buffer is unpinned or freed. Arrays which
+ * are not evaluated, and small buffers which share the allocator's heap, are
+ * skipped.
+ *
+ * Returns the number of bytes newly pinned.
+ * */
+MLX_API size_t pin_resident(const std::vector<array>& arrays);
+
+/* Undo :func:`pin_resident`. Returns the number of bytes unpinned. */
+MLX_API size_t unpin_resident(const std::vector<array>& arrays);
+
+/* The total size in bytes of the memory pinned by :func:`pin_resident`. */
+MLX_API size_t get_pinned_memory();
+
 } // namespace mlx::core
