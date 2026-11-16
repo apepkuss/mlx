@@ -44,6 +44,8 @@ class MetalAllocator : public allocator::Allocator {
   // unpinned or freed. Return the bytes changed.
   size_t pin_resident(Buffer buffer);
   size_t unpin_resident(Buffer buffer);
+  // Release the buffer cache, then pin every buffer still allocated.
+  size_t pin_all_resident();
   size_t get_pinned_memory() const;
   void clear_cache();
 

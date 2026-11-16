@@ -107,7 +107,17 @@ MLX_API size_t pin_resident(const std::vector<array>& arrays);
 /* Undo :func:`pin_resident`. Returns the number of bytes unpinned. */
 MLX_API size_t unpin_resident(const std::vector<array>& arrays);
 
-/* The total size in bytes of the memory pinned by :func:`pin_resident`. */
+/* Pin, as :func:`pin_resident` does, every buffer allocated right now.
+ *
+ * The buffer cache is released first, so only memory in use is pinned. Each
+ * pin still ends when its buffer is unpinned or freed.
+ *
+ * Returns the number of bytes newly pinned.
+ * */
+MLX_API size_t pin_all_resident();
+
+/* The total size in bytes of the memory pinned by :func:`pin_resident`
+ * and :func:`pin_all_resident`. */
 MLX_API size_t get_pinned_memory();
 
 } // namespace mlx::core

@@ -470,6 +470,9 @@ size_t pin_resident(const std::vector<array>&) {
 size_t unpin_resident(const std::vector<array>&) {
   return 0;
 }
+size_t pin_all_resident() {
+  return 0;
+}
 size_t get_pinned_memory() {
   return 0;
 }

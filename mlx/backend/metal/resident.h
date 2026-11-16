@@ -49,6 +49,10 @@ class ResidencySets {
   size_t pin(const MTL::Allocation* buf);
   size_t unpin(const MTL::Allocation* buf);
 
+  // Pin every tracked allocation that is not pinned yet, committing each set
+  // it touches once. Returns the bytes newly pinned.
+  size_t pin_all();
+
   // Lock-free check, so the allocator's free path costs nothing while no
   // allocation is pinned.
   bool has_pinned() const {
