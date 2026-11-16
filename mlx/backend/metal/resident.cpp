@@ -202,6 +202,42 @@ size_t ResidencySets::pin(const MTL::Allocation* buf) {
   return at.bytes;
 }
 
+size_t ResidencySets::pin_all() {
+  if (!enabled_) {
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(mtx_);
+  auto pool = new_scoped_memory_pool();
+  std::vector<bool> touched(sets_.size(), false);
+  size_t bytes = 0;
+  size_t count = 0;
+  for (auto& [buf, at] : buf_to_set_) {
+    if (at.pinned) {
+      continue;
+    }
+    if (at.set_id == kNoSet) {
+      uint32_t idx = add_to_set_locked(buf, at);
+      if (idx >= touched.size()) {
+        touched.resize(sets_.size(), false); // a new set was made
+      }
+      touched[idx] = true;
+    }
+    // As in pin(): its bytes leave the wired limit's accounting.
+    total_wired_ -= at.bytes;
+    total_pinned_ += at.bytes;
+    at.pinned = true;
+    bytes += at.bytes;
+    ++count;
+  }
+  num_pinned_.fetch_add(count, std::memory_order_release);
+  for (size_t i = 0; i < touched.size(); ++i) {
+    if (touched[i]) {
+      sets_[i].set->commit();
+    }
+  }
+  return bytes;
+}
+
 size_t ResidencySets::unpin(const MTL::Allocation* buf) {
   if (!enabled_) {
     return 0;

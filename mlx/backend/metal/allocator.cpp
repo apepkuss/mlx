@@ -121,6 +121,14 @@ size_t MetalAllocator::unpin_resident(Buffer buffer) {
   return residency_sets_.unpin(buf);
 }
 
+size_t MetalAllocator::pin_all_resident() {
+  std::unique_lock lk(mutex_);
+  // Cached buffers are free: pinning one would hand the pin to whatever
+  // allocation reuses it.
+  num_resources_ -= buffer_cache_.clear();
+  return residency_sets_.pin_all();
+}
+
 size_t MetalAllocator::get_pinned_memory() const {
   return residency_sets_.pinned_size();
 }
@@ -303,6 +311,9 @@ size_t unpin_resident(const std::vector<array>& arrays) {
     }
   }
   return bytes;
+}
+size_t pin_all_resident() {
+  return metal::allocator().pin_all_resident();
 }
 size_t get_pinned_memory() {
   return metal::allocator().get_pinned_memory();

@@ -401,3 +401,41 @@ TEST_CASE("test pin_resident pins the buffers of evaluated arrays") {
   synchronize();
   CHECK_EQ(get_pinned_memory(), 0);
 }
+
+TEST_CASE("test pin_all_resident pins the buffers in use and not the cache") {
+  if (!residency().enabled()) {
+    return;
+  }
+  auto mtl = [](allocator::Buffer buf) {
+    return static_cast<MTL::Buffer*>(buf.ptr());
+  };
+  // A cache limit with room, so a freed buffer stays cached.
+  LimitGuard guard(0, 64 * MB);
+  auto live = allocator::malloc(4 * MB);
+  auto cached = allocator::malloc(8 * MB);
+  allocator::free(cached);
+  CHECK_GE(get_cache_memory(), 8 * MB);
+
+  const size_t pinned = pin_all_resident();
+  CHECK_GE(pinned, 4 * MB);
+  CHECK_EQ(get_pinned_memory(), pinned);
+  // The cache was released rather than pinned, and nothing is wired.
+  CHECK_EQ(get_cache_memory(), 0);
+  CHECK_EQ(residency().wired_size(), 0);
+  check_gpu_work();
+
+  // Already pinned: nothing more to do.
+  CHECK_EQ(pin_all_resident(), 0);
+  // The live buffer is among them, and a later allocation is not.
+  CHECK_EQ(residency().pin(mtl(live)), 0);
+  auto later = allocator::malloc(8 * MB);
+  CHECK_EQ(get_pinned_memory(), pinned);
+
+  // Freeing a pinned buffer ends its pin.
+  allocator::free(live);
+  CHECK_EQ(get_pinned_memory(), pinned - 4 * MB);
+  allocator::free(later);
+  clear_cache();
+  // Buffers other tests left allocated stay pinned until they are freed.
+  CHECK_EQ(get_pinned_memory(), pinned - 4 * MB);
+}
