@@ -14,6 +14,13 @@ constant bool align_K [[function_constant(201)]];
 constant bool has_mask [[function_constant(300)]];
 constant bool do_causal [[function_constant(301)]];
 constant bool has_sinks [[function_constant(302)]];
+// The mask buffer holds a bias by backward distance, [B, H, qL, band],
+// rather than one value per (query, key).
+constant bool has_band [[function_constant(303)]];
+// Keys further back than the band are masked rather than left unbiased.
+constant bool band_window [[function_constant(304)]];
+// One sink per query, [B, H, qL], rather than one per head.
+constant bool query_sinks [[function_constant(305)]];
 
 struct MaxOp {
   template <typename T>
@@ -226,10 +233,24 @@ template <
   }
 
   if (has_sinks) {
-    STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT; ++i) {
-      max_score[i] = M_LOG2E_F * static_cast<AccumType>(sinks[tidl.y]);
-      sum_score[i] = 1;
+    if (query_sinks) {
+      const device T* row_sinks =
+          sinks + (tidl.z * params->H + tidl.y) * params->qL;
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < kRowsPT; ++i) {
+        const int row =
+            int(tid.x) * BQ + tm + sm + (i * decltype(Stile)::kFragRows);
+        max_score[i] = row < params->qL
+            ? M_LOG2E_F * static_cast<AccumType>(row_sinks[row])
+            : AccumType(0);
+        sum_score[i] = 1;
+      }
+    } else {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < kRowsPT; ++i) {
+        max_score[i] = M_LOG2E_F * static_cast<AccumType>(sinks[tidl.y]);
+        sum_score[i] = 1;
+      }
     }
   }
 
@@ -325,8 +346,42 @@ template <
       }
     }
 
+    // Bias by backward distance, read only where the tile meets the band
+    if (has_band) {
+      using stile_t = decltype(Stile);
+      using selem_t = typename stile_t::elem_type;
+      constexpr auto neg_inf = Limits<selem_t>::finite_min;
+
+      const int extent = mask_params->band;
+      // The smallest distance any query of this block has to the tile.
+      const int min_dist =
+          int(tid.x) * BQ + params->qL_off - (kb * BK + BK - 1);
+
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < stile_t::kTileRows; i++) {
+        const int row = tid.x * BQ + tm + sm + (i * stile_t::kFragRows);
+        STEEL_PRAGMA_UNROLL
+        for (short j = 0; j < stile_t::kTileCols; j++) {
+          const int col_pos = kb * BK + sn + (j * stile_t::kFragCols);
+          STEEL_PRAGMA_UNROLL
+          for (short jj = 0; jj < stile_t::MMAFrag_t::kElemCols; jj++) {
+            const int dist = row + params->qL_off - (col_pos + jj);
+            if (min_dist < extent && dist >= 0 && dist < extent &&
+                row < params->qL) {
+              Stile.frag_at(i, j)[jj] +=
+                  M_LOG2E_F *
+                  selem_t(
+                      mask[int64_t(row) * mask_params->M_strides[2] + dist]);
+            } else if (band_window && dist >= extent) {
+              Stile.frag_at(i, j)[jj] = neg_inf;
+            }
+          }
+        }
+      }
+    }
+
     // Other masking as needed
-    if (has_mask) {
+    if (has_mask && !has_band) {
       using stile_t = decltype(Stile);
       using selem_t = typename stile_t::elem_type;
       constexpr auto neg_inf = Limits<selem_t>::finite_min;

@@ -17,6 +17,13 @@ constant bool align_K [[function_constant(201)]];
 constant bool has_mask [[function_constant(300)]];
 constant bool do_causal [[function_constant(301)]];
 constant bool has_sinks [[function_constant(302)]];
+// The mask buffer holds a bias by backward distance, [B, H, qL, band],
+// rather than one value per (query, key).
+constant bool has_band [[function_constant(303)]];
+// Keys further back than the band are masked rather than left unbiased.
+constant bool band_window [[function_constant(304)]];
+// One sink per query, [B, H, qL], rather than one per head.
+constant bool query_sinks [[function_constant(305)]];
 
 template <typename T>
 struct TransformScale {
@@ -166,10 +173,28 @@ template <
   }
 
   if (has_sinks) {
-    STEEL_PRAGMA_UNROLL
-    for (short i = 0; i < kRowsPT; ++i) {
-      max_score[i] = M_LOG2E_F * static_cast<AccumType>(sinks[tidl.y]);
-      sum_score[i] = 1;
+    if (query_sinks) {
+      const device T* row_sinks =
+          sinks + (tidl.z * params->H + tidl.y) * params->qL;
+      STEEL_PRAGMA_UNROLL
+      for (short iq = 0; iq < TQ; iq++) {
+        STEEL_PRAGMA_UNROLL
+        for (short ii = 0; ii < otile_t::kFragThrRows; ii++) {
+          const int row =
+              int(tid.x) * BQ + tm + iq * kU + ii * otile_t::kFragRowsJump + sm;
+          const short i = iq * otile_t::kFragThrRows + ii;
+          max_score[i] = row < params->qL
+              ? M_LOG2E_F * static_cast<AccumType>(row_sinks[row])
+              : AccumType(0);
+          sum_score[i] = 1;
+        }
+      }
+    } else {
+      STEEL_PRAGMA_UNROLL
+      for (short i = 0; i < kRowsPT; ++i) {
+        max_score[i] = M_LOG2E_F * static_cast<AccumType>(sinks[tidl.y]);
+        sum_score[i] = 1;
+      }
     }
   }
 
@@ -307,8 +332,55 @@ template <
       }
     }
 
+    // Bias by backward distance, read only where the tile meets the band
+    if (has_band) {
+      constexpr auto neg_inf = Limits<AccumType>::finite_min;
+
+      const int base_row = tid.x * BQ + tm;
+      const int base_col = kb * BK;
+      const int extent = mask_params->band;
+      // The smallest distance any query of this block has to the tile.
+      const int min_dist =
+          int(tid.x) * BQ + params->qL_off - (base_col + BK - 1);
+
+      if (min_dist < extent) {
+        STEEL_PRAGMA_UNROLL
+        for (short iq = 0; iq < TQ; iq++) {
+          STEEL_PRAGMA_UNROLL
+          for (short ik = 0; ik < TK; ik++) {
+            thread auto& fg = Stile.frag_at(iq, ik);
+
+            STEEL_PRAGMA_UNROLL
+            for (short ii = 0; ii < stile_t::kFragThrRows; ii++) {
+              STEEL_PRAGMA_UNROLL
+              for (short jj = 0; jj < stile_t::kFragThrCols; jj++) {
+                const int row =
+                    base_row + iq * kU + ii * stile_t::kFragRowsJump + sm;
+                const int dist =
+                    row + params->qL_off - (base_col + ik * kU + jj + sn);
+                const auto loc = ii * stile_t::kFragThrCols + jj;
+                if (dist >= 0 && dist < extent && row < params->qL) {
+                  fg[loc] += M_LOG2E_F *
+                      AccumType(mask
+                                    [int64_t(row) * mask_params->M_strides[2] +
+                                     dist]);
+                } else if (band_window && dist >= extent) {
+                  fg[loc] = neg_inf;
+                }
+              }
+            }
+          }
+        }
+      } else if (band_window) {
+        STEEL_PRAGMA_UNROLL
+        for (short ii = 0; ii < stile_t::kElemsPerTile; ii++) {
+          Stile.elems()[ii] = neg_inf;
+        }
+      }
+    }
+
     // Other masking as needed
-    if (has_mask) {
+    if (has_mask && !has_band) {
       constexpr auto neg_inf = Limits<AccumType>::finite_min;
 
       const int base_row = tid.x * BQ + tm;

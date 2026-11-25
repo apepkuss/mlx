@@ -38,6 +38,7 @@ struct AttnParams {
 
 struct AttnMaskParams {
   int64_t M_strides[3]; ///< Mask  strides (B, H, qL, kL = 1)
+  int band; ///< Distances covered by a banded bias, 0 for a dense mask
 };
 
 } // namespace steel

@@ -25,7 +25,9 @@ void sdpa_full_self_attention_nax(
     array& o,
     bool do_causal_,
     const std::optional<array>& mask,
-    const std::optional<array>& sinks) {
+    const std::optional<array>& sinks,
+    int band_mode,
+    bool query_sinks) {
   using namespace mlx::steel;
 
   int wm = 4;
@@ -48,13 +50,18 @@ void sdpa_full_self_attention_nax(
   const bool has_mask = mask.has_value();
   const bool do_causal = do_causal_;
   const bool has_sinks = sinks.has_value();
+  const bool has_band = band_mode != 0;
+  const bool band_window = band_mode == 2;
 
   metal::MTLFCList func_consts = {
       {&align_Q, MTL::DataType::DataTypeBool, 200},
       {&align_K, MTL::DataType::DataTypeBool, 201},
       {&has_mask, MTL::DataType::DataTypeBool, 300},
       {&do_causal, MTL::DataType::DataTypeBool, 301},
-      {&has_sinks, MTL::DataType::DataTypeBool, 302}};
+      {&has_sinks, MTL::DataType::DataTypeBool, 302},
+      {&has_band, MTL::DataType::DataTypeBool, 303},
+      {&band_window, MTL::DataType::DataTypeBool, 304},
+      {&query_sinks, MTL::DataType::DataTypeBool, 305}};
 
   std::string base_name;
   concatenate(
@@ -87,7 +94,11 @@ void sdpa_full_self_attention_nax(
       "_do_causal_",
       (do_causal ? 't' : 'n'),
       "_has_sinks_",
-      (has_sinks ? 't' : 'n'));
+      (has_sinks ? 't' : 'n'),
+      "_band_",
+      band_mode,
+      "_query_sinks_",
+      (query_sinks ? 't' : 'n'));
 
   auto& compute_encoder = metal::get_command_encoder(s);
 
@@ -147,8 +158,9 @@ void sdpa_full_self_attention_nax(
   if (has_mask) {
     auto& m = *mask;
 
-    AttnMaskParams mask_params{/* int64_t M_strides[3] = */ {
-        m.strides(0), m.strides(1), m.strides(2)}};
+    AttnMaskParams mask_params{
+        /* int64_t M_strides[3] = */ {m.strides(0), m.strides(1), m.strides(2)},
+        /* int band = */ has_band ? int(m.shape(3)) : 0};
 
     compute_encoder.set_bytes(mask_params, 5);
     compute_encoder.set_input_array(m, 6);
@@ -174,7 +186,9 @@ void sdpa_full_self_attention_metal(
     array& o,
     bool do_causal_,
     const std::optional<array>& mask,
-    const std::optional<array>& sinks) {
+    const std::optional<array>& sinks,
+    int band_mode,
+    bool query_sinks) {
   if (metal::is_nax_available() &&
       (q.shape(3) == 64 || q.shape(3) == 96 || q.shape(3) == 128) &&
       (env::enable_tf32() || q.dtype() != float32)) {
@@ -188,7 +202,9 @@ void sdpa_full_self_attention_metal(
         /* array& o = */ o,
         /* bool do_causal_ = */ do_causal_,
         /* const std::optional<array>& mask = */ mask,
-        /* const std::optional<array>& sinks = */ sinks);
+        /* const std::optional<array>& sinks = */ sinks,
+        /* int band_mode = */ band_mode,
+        /* bool query_sinks = */ query_sinks);
   }
 
   using namespace mlx::steel;
@@ -213,13 +229,18 @@ void sdpa_full_self_attention_metal(
   const bool has_mask = mask.has_value();
   const bool do_causal = do_causal_;
   const bool has_sinks = sinks.has_value();
+  const bool has_band = band_mode != 0;
+  const bool band_window = band_mode == 2;
 
   metal::MTLFCList func_consts = {
       {&align_Q, MTL::DataType::DataTypeBool, 200},
       {&align_K, MTL::DataType::DataTypeBool, 201},
       {&has_mask, MTL::DataType::DataTypeBool, 300},
       {&do_causal, MTL::DataType::DataTypeBool, 301},
-      {&has_sinks, MTL::DataType::DataTypeBool, 302}};
+      {&has_sinks, MTL::DataType::DataTypeBool, 302},
+      {&has_band, MTL::DataType::DataTypeBool, 303},
+      {&band_window, MTL::DataType::DataTypeBool, 304},
+      {&query_sinks, MTL::DataType::DataTypeBool, 305}};
 
   std::string base_name;
   concatenate(
@@ -252,7 +273,11 @@ void sdpa_full_self_attention_metal(
       "_do_causal_",
       (do_causal ? 't' : 'n'),
       "_has_sinks_",
-      (has_sinks ? 't' : 'n'));
+      (has_sinks ? 't' : 'n'),
+      "_band_",
+      band_mode,
+      "_query_sinks_",
+      (query_sinks ? 't' : 'n'));
 
   auto& compute_encoder = metal::get_command_encoder(s);
 
@@ -312,8 +337,9 @@ void sdpa_full_self_attention_metal(
   if (has_mask) {
     auto& m = *mask;
 
-    AttnMaskParams mask_params{/* int64_t M_strides[3] = */ {
-        m.strides(0), m.strides(1), m.strides(2)}};
+    AttnMaskParams mask_params{
+        /* int64_t M_strides[3] = */ {m.strides(0), m.strides(1), m.strides(2)},
+        /* int band = */ has_band ? int(m.shape(3)) : 0};
 
     compute_encoder.set_bytes(mask_params, 5);
     compute_encoder.set_input_array(m, 6);
@@ -762,7 +788,12 @@ void ScaledDotProductAttention::eval_gpu(
 
   std::optional<array> sinks = std::nullopt;
   if (has_sinks_) {
-    sinks = copy_unless(is_matrix_contiguous, inputs.back());
+    // Per-query sinks are indexed as one [B, H, qL] block.
+    auto is_row_contiguous = [](const array& arr) {
+      return arr.flags().row_contiguous;
+    };
+    sinks = query_sinks_ ? copy_unless(is_row_contiguous, inputs.back())
+                         : copy_unless(is_matrix_contiguous, inputs.back());
   }
   bool has_arr_mask = inputs.size() > (3 + has_sinks_);
 
@@ -867,7 +898,18 @@ void ScaledDotProductAttention::eval_gpu(
         : std::nullopt;
 
     sdpa_full_self_attention_metal(
-        s, d, q, k, v, scale_, o, do_causal_, mask, sinks);
+        s,
+        d,
+        q,
+        k,
+        v,
+        scale_,
+        o,
+        do_causal_,
+        mask,
+        sinks,
+        band_mode_,
+        query_sinks_);
   }
 
   metal::get_command_encoder(s).add_temporaries(std::move(copies));

@@ -213,13 +213,17 @@ class ScaledDotProductAttention : public Custom {
       bool do_causal,
       bool has_sinks,
       bool output_logsumexp,
-      bool force_fused)
+      bool force_fused,
+      int band_mode = 0,
+      bool query_sinks = false)
       : Custom(stream, std::move(fallback)),
         scale_(scale),
         do_causal_(do_causal),
         has_sinks_(has_sinks),
         output_logsumexp_(output_logsumexp),
-        force_fused_(force_fused) {}
+        force_fused_(force_fused),
+        band_mode_(band_mode),
+        query_sinks_(query_sinks) {}
 
   static bool use_fallback(
       const array& q,
@@ -268,6 +272,12 @@ class ScaledDotProductAttention : public Custom {
   bool has_sinks_;
   bool output_logsumexp_;
   bool force_fused_;
+  // 0: the mask input, if any, has one value per (query, key).
+  // 1: it is a bias by backward distance, [B, H, qL, band].
+  // 2: as 1, and keys further back than the band are masked.
+  int band_mode_;
+  // The sinks input is [B, H, qL] rather than [H].
+  bool query_sinks_;
 };
 
 class ScaledDotProductAttentionVJP : public Custom {

@@ -629,11 +629,39 @@ array scaled_dot_product_attention(
     }
   }
   // Check valid mask
-  if (mask_mode != "" && mask_mode != "causal" && mask_mode != "array") {
+  if (mask_mode != "" && mask_mode != "causal" && mask_mode != "array" &&
+      mask_mode != "band" && mask_mode != "band_window") {
     std::ostringstream msg;
     msg << "[scaled_dot_product_attention] Invalid mask_mode " << mask_mode
-        << ". mask_mode must be 'causal', 'array' or ''.";
+        << ". mask_mode must be 'causal', 'array', 'band', 'band_window' "
+        << "or ''.";
     throw std::invalid_argument(msg.str());
+  }
+
+  // 'band' and 'band_window' are causal and take mask_arr as a bias by
+  // backward distance, [B, n_q_heads, L_q, band]: query i adds
+  // mask_arr[..., i, d] to the key d positions before it, for d < band.
+  // Keys further back are unbiased ('band') or masked ('band_window').
+  const int band_mode =
+      mask_mode == "band" ? 1 : (mask_mode == "band_window" ? 2 : 0);
+  if (band_mode != 0) {
+    if (!mask_arr || mask_arr->ndim() != 4 ||
+        mask_arr->shape(0) != queries.shape(0) ||
+        mask_arr->shape(1) != queries.shape(1) ||
+        mask_arr->shape(2) != queries.shape(2) || mask_arr->shape(3) < 1 ||
+        mask_arr->dtype() == bool_) {
+      std::ostringstream msg;
+      msg << "[scaled_dot_product_attention] mask_mode '" << mask_mode
+          << "' expects a floating mask_arr of shape [B, n_q_heads, L_q, "
+          << "band] for queries of shape " << queries.shape() << ".";
+      throw std::invalid_argument(msg.str());
+    }
+    if (queries.shape(2) > keys.shape(2)) {
+      std::ostringstream msg;
+      msg << "[scaled_dot_product_attention] mask_mode '" << mask_mode
+          << "' expects the queries to be the last L_q keys.";
+      throw std::invalid_argument(msg.str());
+    }
   }
 
   bool do_causal = false;
@@ -655,6 +683,7 @@ array scaled_dot_product_attention(
     has_mask = true;
     has_arr_mask = true;
     has_bool_mask = mask_arr->dtype() == bool_;
+    do_causal = band_mode != 0;
   }
 
   if (has_arr_mask && mask_arr->ndim() > 4) {
@@ -710,6 +739,8 @@ array scaled_dot_product_attention(
     throw std::invalid_argument(msg.str());
   }
   bool has_sinks = sinks.has_value();
+  // One sink per query, [B, n_q_heads, L_q], rather than one per head.
+  const bool query_sinks = has_sinks && sinks->ndim() == 3;
 
   auto q = astype(queries, final_type, s);
   auto k = astype(keys, final_type, s);
@@ -721,6 +752,8 @@ array scaled_dot_product_attention(
                    do_causal,
                    has_sinks,
                    has_arr_mask,
+                   band_mode,
+                   query_sinks,
                    s](const std::vector<array>& inputs) {
     auto q = multiply(array(scale, inputs[0].dtype()), inputs[0], s);
     int n_repeats = n_q_heads / n_kv_heads;
@@ -732,7 +765,36 @@ array scaled_dot_product_attention(
       v = expand_dims(v, 2, s);
     }
     auto scores = matmul(q, swapaxes(k, -1, -2, s), s);
-    if (has_arr_mask || do_causal) {
+    if (band_mode != 0) {
+      // Expand the band to one value per (query, key).
+      const auto& band = inputs[3];
+      int kL = k.shape(-2);
+      int qL = q.shape(-2);
+      int extent = band.shape(-1);
+      auto q_idx = expand_dims(arange(kL - qL, kL, s), 1, s);
+      auto k_idx = expand_dims(arange(0, kL, s), 0, s);
+      auto dist = subtract(q_idx, k_idx, s);
+      auto visible = greater_equal(dist, array(0), s);
+      auto in_band = logical_and(visible, less(dist, array(extent), s), s);
+      auto mask_shape = band.shape();
+      mask_shape.back() = kL;
+      auto idx = broadcast_to(
+          clip(dist, array(0), array(extent - 1), s), mask_shape, s);
+      auto mask = where(
+          in_band,
+          take_along_axis(band, idx, -1, s),
+          array(0.0f, scores.dtype()),
+          s);
+      if (band_mode == 2) {
+        visible = in_band;
+      }
+      mask = where(
+          visible, mask, array(finfo(scores.dtype()).min, scores.dtype()), s);
+      if (n_repeats > 1) {
+        mask = unflatten(mask, -3, {n_kv_heads, n_repeats}, s);
+      }
+      scores = add(scores, mask, s);
+    } else if (has_arr_mask || do_causal) {
       // Mask must be broadcast-compatible with [B, n_q_heads, L_q, L_kv]
       auto make_or_fetch_mask = [&]() {
         if (do_causal) {
@@ -766,7 +828,8 @@ array scaled_dot_product_attention(
     if (has_sinks) {
       auto sinks = inputs.back();
       // scores has shape B N_q N_k L_q L_k
-      sinks = expand_dims(sinks, {0, 2, 3}, s);
+      sinks = query_sinks ? expand_dims(sinks, -1, s)
+                          : expand_dims(sinks, {0, 2, 3}, s);
       if (scores.ndim() == 5) {
         sinks = unflatten(sinks, 1, {n_kv_heads, n_repeats}, s);
       }
@@ -802,10 +865,14 @@ array scaled_dot_product_attention(
     } else if (!has_bool_mask) {
       mask_arr = astype(*mask_arr, final_type, stream);
     }
-    // Broadcast mask
-    auto mask_shape = queries.shape();
-    mask_shape.back() = keys.shape(-2);
-    inputs.push_back(broadcast_to(*mask_arr, mask_shape, stream));
+    if (band_mode != 0) {
+      inputs.push_back(*mask_arr);
+    } else {
+      // Broadcast mask
+      auto mask_shape = queries.shape();
+      mask_shape.back() = keys.shape(-2);
+      inputs.push_back(broadcast_to(*mask_arr, mask_shape, stream));
+    }
   }
   if (has_sinks) {
     if (promote_types(sinks->dtype(), final_type) != final_type) {
@@ -814,7 +881,11 @@ array scaled_dot_product_attention(
           << final_type << ".";
       throw std::invalid_argument(msg.str());
     }
-    if (sinks->ndim() != 1 || sinks->shape(0) != n_q_heads) {
+    const bool per_head = sinks->ndim() == 1 && sinks->shape(0) == n_q_heads;
+    const bool per_query = sinks->ndim() == 3 &&
+        sinks->shape(0) == queries.shape(0) && sinks->shape(1) == n_q_heads &&
+        sinks->shape(2) == queries.shape(2);
+    if (!per_head && !per_query) {
       std::ostringstream msg;
       msg << "[scaled_dot_product_attention] Received invalid shape for sinks "
           << sinks->shape() << ".";
@@ -826,7 +897,13 @@ array scaled_dot_product_attention(
   bool is_training = detail::in_grad_tracing();
   bool has_fast_vjp = !ScaledDotProductAttentionVJP::use_fallback(q, stream);
   bool output_logsumexp = is_training && has_fast_vjp;
-  if (!ScaledDotProductAttention::use_fallback(
+  // The banded bias and per-query sinks are only in the full-attention
+  // kernels; the single-query kernels and the VJP take the fallback.
+  const bool full_only = band_mode != 0 || query_sinks;
+  const bool full_ok = !full_only ||
+      (queries.shape(2) > 8 && !is_training && stream.device == Device::gpu);
+  if (full_ok &&
+      !ScaledDotProductAttention::use_fallback(
           q,
           k,
           v,
@@ -835,7 +912,7 @@ array scaled_dot_product_attention(
           do_causal,
           is_training,
           output_logsumexp,
-          force_fused,
+          force_fused && !full_only,
           stream)) {
     if (has_bool_mask && !ScaledDotProductAttention::supports_bool_mask()) {
       // Convert bool mask to additive mask.
@@ -854,7 +931,9 @@ array scaled_dot_product_attention(
         do_causal,
         has_sinks,
         output_logsumexp,
-        force_fused);
+        force_fused,
+        band_mode,
+        query_sinks);
     if (output_logsumexp) {
       return array::make_arrays(
           {std::move(out_shape), Shape{q.shape(0), q.shape(1), q.shape(2), 1}},
@@ -921,7 +1000,8 @@ bool ScaledDotProductAttention::is_equivalent(const Primitive& other) const {
   return scale_ == a_other.scale_ && do_causal_ == a_other.do_causal_ &&
       has_sinks_ == a_other.has_sinks_ &&
       output_logsumexp_ == a_other.output_logsumexp_ &&
-      force_fused_ == a_other.force_fused_;
+      force_fused_ == a_other.force_fused_ &&
+      band_mode_ == a_other.band_mode_ && query_sinks_ == a_other.query_sinks_;
 }
 
 bool ScaledDotProductAttentionVJP::is_equivalent(const Primitive& other) const {
